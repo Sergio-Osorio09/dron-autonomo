@@ -416,16 +416,35 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 resize();
-let lastT = performance.now(), camYaw = 0;
+let lastRender = performance.now(), camYaw = 0;
+// calidad adaptativa: si el navegador va a menos de ~35 fps durante 2 s, baja resolución interna y sombras
+const perf = { acc: 0, n: 0, level: 0 };
+function adaptQuality(dt) {
+  perf.acc += dt; perf.n++;
+  if (perf.acc < 2) return;
+  const fps = perf.n / perf.acc;
+  perf.acc = 0; perf.n = 0;
+  if (fps < 35 && perf.level < 2) {
+    perf.level++;
+    renderer.setPixelRatio(perf.level === 1 ? 1 : 0.75);
+    sun.shadow.mapSize.set(perf.level === 1 ? 1024 : 512, perf.level === 1 ? 1024 : 512);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+    resize();
+  }
+}
 function animate() {
   requestAnimationFrame(animate);
-  const now = performance.now(), dt = Math.min(0.1, (now - lastT) / 1000);
-  lastT = now;
+  const now = performance.now(), dt = Math.min(0.1, (now - lastRender) / 1000);
+  lastRender = now;
+  adaptQuality(dt);
   const simRate = Number(els.speed.value);
   if (poses.length) {
     const newest = poses[poses.length - 1].t;
-    const target = newest - 0.1;
-    playClock = Math.min(newest, Math.max(playClock + dt * simRate * (playClock < target - 0.25 ? 1.5 : 1), poses[0].t));
+    const target = newest - 0.3;  // colchón: se reproduce 0,3 s por detrás de lo último recibido
+    if (playing || streamEnded) {
+      playClock = Math.min(newest, Math.max(playClock + dt * simRate * (playClock < target - 0.3 ? 1.4 : 1), poses[0].t));
+    }
+    while (pending.length && pending[0].t <= playClock + 1e-6) applyFrame(pending.shift());  // panel al ritmo del vídeo
     const s = sampleAt(playClock);
     drone.position.copy(s.p);
     drone.quaternion.copy(s.q);
@@ -590,9 +609,18 @@ function showProfile(p) {
   buildDrone(p.radius);
 }
 
-function applyFrame(f, reset) {
+// fotogramas recibidos que aún no se han mostrado (llegan hasta 1 s antes de su momento)
+const pending = [];
+let lastT = -1, streamEnded = false;
+function ingest(f) {
+  pushPose(f, false);
+  pending.push(f);
+  lastT = f.t;
+  if (f.status !== "flying") streamEnded = true;
+}
+
+function applyFrame(f) {
   frame = f;
-  pushPose(f, reset);
   rayData = f.rays || [];
   rayLines.visible = els.rays.checked;
   const showGps = els.gps.checked;
@@ -643,20 +671,22 @@ async function newFlight() {
     world.rain = f.config.rain;
     telemetry.length = 0; gpsList.length = 0; lastGps = null;
     gpsGeo.setDrawRange(0, 0);
-    applyFrame(f, true);
+    pending.length = 0; lastT = f.t; streamEnded = false;
+    pushPose(f, true);
+    applyFrame(f);
     const dp = V(f.pos);
     camYaw = f.yaw;
     camera.position.copy(dp.clone().add(new THREE.Vector3(-Math.cos(camYaw) * 6, 3, Math.sin(camYaw) * 6)));
     controls.target.copy(dp);
   } catch (e) { toast(e.message); }
 }
-async function tick() {
-  if (busy || !frame || frame.status !== "flying") return false;
+async function tick() {  // recoge los fotogramas que el servidor ya ha simulado por delante
+  if (busy || !frame || streamEnded) return !streamEnded;
   busy = true;
   try {
-    const f = await api("/api/step", { dt: 0.05 * Number(els.speed.value) });
-    applyFrame(f, false);
-    return f.status === "flying";
+    const r = await api("/api/frames", { since: lastT, clock: playClock });
+    r.frames.forEach(ingest);
+    return !streamEnded;
   } catch (e) { toast(e.message); setPlaying(false); return false; } finally { busy = false; }
 }
 function setPlaying(on) {
@@ -666,11 +696,8 @@ function setPlaying(on) {
 }
 async function loop() {
   while (playing) {
-    const t0 = performance.now();
     if (!(await tick())) break;
-    const ahead = poses.length ? poses[poses.length - 1].t - playClock : 0;
-    const wait = Math.max(50 - (performance.now() - t0), ahead > 0.4 * Number(els.speed.value) ? 25 : 0);
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    await new Promise((r) => setTimeout(r, 60));
   }
 }
 els.newBtn.onclick = newFlight;

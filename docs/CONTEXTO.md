@@ -76,6 +76,14 @@ Todos están en `dron/params.py`, con fuente:
     Ahora el golpe lo registra la IMU, el filtro se reinicia con el GPS si lo rechaza durante 0,5 s (como EKF2) y en
     crucero se mantiene 1 m sobre la superficie de debajo y la de 0,8 s por delante.
 
+13. **Tirones en la interfaz.** Había tres causas. (a) Un A* hacia un punto inalcanzable exploraba el mapa entero y
+    congelaba la simulación hasta 18 s. Ahora comprueba antes si origen y destino están en la misma zona libre
+    conectada (componentes conexas con scipy, al instante), usa arrays de numpy en vez de diccionarios y tiene un
+    presupuesto de 60 000 nodos; el peor paso bajó a ~150 ms. (b) El navegador pedía los pasos de uno en uno: ahora
+    el servidor simula en un hilo propio hasta 1 s por delante, y el navegador reproduce con 0,3 s de colchón y
+    conexiones persistentes, así que los pasos lentos ya no se ven. (c) Calidad gráfica adaptativa: por debajo de
+    ~35 fps baja la resolución interna y la de las sombras.
+
 ## 4. Resultados
 
 Ver `eval/resultados.md` (3 drones × 16 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera y
@@ -93,3 +101,47 @@ objetivo en movimiento).
 | 4 | Objetivo que HUYE del dron y se esconde tras edificios (el seguimiento de objetivos móviles ya existe desde la 1c) | Persecución-evasión, búsqueda desde la última posición vista |
 | 5 | Varios drones que se reparten la búsqueda (activable) | Subastas **CBBA** / algoritmo húngaro, **Voronoi**, **ORCA** |
 | 6 | Banco de pruebas, repeticiones y, opcionalmente, puente a PX4 SITL + Gazebo | — |
+
+## 6. Estado actual y cómo continuar (para un chat nuevo)
+
+**Estado:** la fase 1 (con 1b y 1c) está terminada. 18 tests en verde; `eval/resultados.md` con 3 drones × 16
+escenarios (45 de 48 al 100 %). Repositorio privado: https://github.com/Sergio-Osorio09/dron-autonomo (rama `main`).
+Comandos: `python -m pytest -q`, `python server.py` (http://127.0.0.1:7873) y
+`python eval/eval_headless.py --flights 1 --md eval/resultados.md` (~10 min).
+
+**Pendientes conocidos de la fase 1** (opcionales, no bloquean la fase 2):
+- El tirón (jerk) del perfil de velocidad es aproximado (suavizado), no una curva en S exacta.
+- PX4 genérico con viento de 10 m/s: aterriza a ~1 m de la plataforma o choca con ráfagas fuertes (está en su límite).
+- Matrice en bosque de densidad extrema con viento: 1 choque de 3.
+- La batería se gasta, pero no hay "volver a casa con batería baja" (RTL por batería, como PX4).
+- Idea descartada por ahora: modo "carrera sin red" que ignore el límite de velocidad por alcance de sensores.
+
+**Qué partes CONOCEN EL MAPA hoy (lo que la fase 2 tiene que cambiar):**
+- `planning.ClearanceGrid(world)` se construye con TODOS los obstáculos y el terreno (`sim.py`, `make_flyable_world`).
+- `Mission` planifica con esa rejilla completa (`plan(...)`), y también la replanificación hacia objetivos móviles.
+- `estimator.range_down(dist, world.surface(...))` usa el mapa del terreno para convertir la distancia en altura.
+- `sim._tick` usa `world.surface` para la altura mínima en crucero.
+- La física, los sensores, la evaluación y el viento SÍ pueden usar el mundo real: son "la realidad", no el dron.
+
+**Plan propuesto para la fase 2 (mapa desconocido):**
+1. `dron/mapping.py`: mapa de ocupación 3D con log-odds (vóxeles de 0,5-1 m, como OctoMap) que se actualiza con los
+   40 telémetros ruidosos (raycasting: celdas libres a lo largo del rayo y ocupada al final). El terreno también se
+   aprende (el rayo inferior y los inclinados).
+2. Campo de distancias (ESDF) incremental sobre ese mapa, para la holgura. Lo desconocido se trata de forma
+   optimista para planificar lejos (como hacen los planificadores de exploración) y como obstáculo muy cerca.
+3. Replanificación cuando el mapa invalida la trayectoria: A* incremental o **D\* Lite**; trayectorias locales
+   suaves con B-splines tipo **EGO-Planner** si da tiempo.
+4. Cambiar `Mission` y `sim` para usar el mapa aprendido en lugar de `ClearanceGrid(world)`. Mantener una opción
+   "mapa conocido" para comparar.
+5. Interfaz: dibujar el mapa que va construyendo el dron (vóxeles ocupados y zona explorada) frente al mundo real.
+6. Evaluación: los mismos escenarios con mapa conocido y desconocido (éxito, tiempo, distancia recorrida,
+   replanificaciones). Tests: el mapa converge al mundo real y no hay choques contra obstáculos no vistos.
+
+**Preferencias del usuario:** todo en español; algoritmos que se usen en drones reales y datos reales con su fuente;
+que se vea bien en pantalla; medir antes de afirmar (tests y evaluación tras cada cambio); explicar las decisiones.
+Hacer commit o push solo cuando lo pida.
+
+**Otros proyectos de la carpeta `Laya/`** (no tocar desde aquí): `laya-2048` y `laya-drone` (pilotos con el modelo
+Laya). En `laya-drone` hay un ajuste v2 pausado al 92 %: `python training/finetune.py --base models/laya-drone
+--out models/laya-drone-v2 --data data/drone_v2_train.jsonl --val data/drone_v2_val.jsonl --epochs 0.6
+--lr-enc 2e-5 --lr-head 1e-4 --resume`.

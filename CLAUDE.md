@@ -5,6 +5,8 @@ otros proyectos (`laya-2048`, `laya-drone`). Este proyecto NO usa Laya ni redes 
 clásicos de robótica como los de drones reales.
 
 Lee primero `docs/CONTEXTO.md`, que tiene la arquitectura, los datos reales, las lecciones aprendidas y el plan de fases.
+**En un chat nuevo, empieza por la sección 6 de `docs/CONTEXTO.md`:** estado actual, pendientes, qué partes del código
+conocen el mapa (lo que cambia en la fase 2) y el plan de la fase 2.
 
 ## Reglas de trabajo
 

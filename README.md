@@ -60,6 +60,12 @@ rápido posible.
 - Controles de todas las opciones de la tabla de arriba, más semilla, velocidad de simulación y cámara
   (persecución, libre o cenital).
 
+## Fluidez
+
+La simulación corre en un hilo del servidor hasta 1 s por delante de lo que ves, y el navegador reproduce con un
+pequeño colchón, así que las replanificaciones no provocan tirones. Si la GPU está ocupada por otros programas (por
+ejemplo, entrenando un modelo), la calidad gráfica baja sola para mantener la fluidez.
+
 ## Resultados
 
 Tabla completa (3 drones × 16 escenarios, mismos mundos para todos) en [eval/resultados.md](eval/resultados.md):

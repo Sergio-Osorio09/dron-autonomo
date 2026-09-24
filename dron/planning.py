@@ -66,39 +66,82 @@ class ClearanceGrid:
         return (np.array(c) + 0.5) * CELL
 
 
-def astar(grid: ClearanceGrid, start, goal, need: float) -> Optional[List[Tuple[int, int, int]]]:
-    free = grid.clr > need
+MAX_EXPANSIONS = 60_000  # presupuesto de nodos: una búsqueda nunca congela la simulación
+
+
+def _components(grid: ClearanceGrid, need: float):
+    """Componentes conexas (26 vecinos) del espacio libre para una holgura dada, en caché por holgura."""
+    from scipy.ndimage import label
+    cache = grid.__dict__.setdefault("_comp", {})
+    key = round(need, 2)
+    if key not in cache:
+        cache[key] = label(grid.clr > need, structure=np.ones((3, 3, 3)))[0]
+    return cache[key]
+
+
+def _labels_near(labels, c):
+    """Etiquetas de componente de la celda y sus vecinas (salida/meta pueden rozar el margen)."""
+    sl = tuple(slice(max(0, v - 1), v + 2) for v in c)
+    return set(np.unique(labels[sl]).tolist()) - {0}
+
+
+def astar(grid: ClearanceGrid, start, goal, need: float,
+          max_expansions: int = MAX_EXPANSIONS) -> Optional[List[Tuple[int, int, int]]]:
+    """A* ponderado sobre la rejilla, con índices planos y arrays de numpy (varias veces más rápido que con
+    diccionarios). Antes de buscar comprueba que salida y meta estén en la misma zona libre conectada: si no, no hay
+    camino y lo dice al instante, en vez de explorar el mapa entero (llegaba a tardar 18 s)."""
+    labels = _components(grid, need)
     s, g = grid.cell(start), grid.cell(goal)
-    for c in (s, g):
-        if not free[c]:
-            free[c] = True  # salida/meta: se permite aunque rocen el margen (el dron está posado o bajando)
-    gx, gy, gz = g
-    moves = [(dx, dy, dz, math.sqrt(dx * dx + dy * dy + dz * dz))
-             for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dy, dz) != (0, 0, 0)]
-    near = 1.0 + 1.5 * np.clip(2.5 - grid.clr, 0, 2.5) / 2.5  # más caro cerca de obstáculos
-    best = {s: 0.0}
-    parent = {s: None}
-    h = lambda c: 1.3 * math.sqrt((c[0] - gx) ** 2 + (c[1] - gy) ** 2 + (c[2] - gz) ** 2)  # A* ponderado
-    heap = [(h(s), 0.0, s)]
+    if not (_labels_near(labels, s) & _labels_near(labels, g)):
+        return None
     nx, ny, nz = grid.shape
+    px, py, pz = nx + 2, ny + 2, nz + 2           # borde de 1 celda bloqueada: sin comprobar límites
+    free = np.zeros((px, py, pz), bool)
+    free[1:-1, 1:-1, 1:-1] = grid.clr > need
+    near = np.ones((px, py, pz))
+    near[1:-1, 1:-1, 1:-1] = 1.0 + 1.5 * np.clip(2.5 - grid.clr, 0, 2.5) / 2.5  # más caro cerca de obstáculos
+    flat = lambda c: ((c[0] + 1) * py + (c[1] + 1)) * pz + (c[2] + 1)
+    si, gi = flat(s), flat(g)
+    free_f, near_f = free.ravel(), near.ravel()
+    free_f[si] = free_f[gi] = True  # salida/meta: se permite aunque rocen el margen
+    moves = [((dx * py + dy) * pz + dz, math.sqrt(dx * dx + dy * dy + dz * dz))
+             for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dy, dz) != (0, 0, 0)]
+    gx, gy, gz = g[0] + 1, g[1] + 1, g[2] + 1
+    best = np.full(free_f.size, np.inf)
+    parent = np.full(free_f.size, -1, dtype=np.int64)
+    best[si] = 0.0
+
+    def h(i):
+        z = i % pz
+        y = (i // pz) % py
+        x = i // (py * pz)
+        return 1.3 * math.sqrt((x - gx) ** 2 + (y - gy) ** 2 + (z - gz) ** 2)  # A* ponderado
+
+    heap = [(h(si), 0.0, si)]
+    expanded = 0
     while heap:
-        _, cost, c = heapq.heappop(heap)
-        if c == g:
+        _, cost, i = heapq.heappop(heap)
+        if i == gi:
             path = []
-            while c is not None:
-                path.append(c)
-                c = parent[c]
+            while i != -1:
+                x, rem = divmod(i, py * pz)
+                y, z = divmod(rem, pz)
+                path.append((x - 1, y - 1, z - 1))
+                i = int(parent[i])
             return path[::-1]
-        if cost > best.get(c, math.inf):
+        if cost > best[i]:
             continue
-        for dx, dy, dz, length in moves:
-            n = (c[0] + dx, c[1] + dy, c[2] + dz)
-            if not (0 <= n[0] < nx and 0 <= n[1] < ny and 0 <= n[2] < nz) or not free[n]:
+        expanded += 1
+        if expanded > max_expansions:
+            return None
+        for off, length in moves:
+            n = i + off
+            if not free_f[n]:
                 continue
-            nc = cost + length * near[n]
-            if nc < best.get(n, math.inf):
+            nc = cost + length * near_f[n]
+            if nc < best[n]:
                 best[n] = nc
-                parent[n] = c
+                parent[n] = i
                 heapq.heappush(heap, (nc + h(n), nc, n))
     return None
 
