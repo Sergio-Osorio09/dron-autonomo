@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dron autónomo</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="importmap">
+    { "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    } }
+  </script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <span class="logo">✈</span>
+    <div>
+      <h1>Dron autónomo</h1>
+      <p class="sub">Física con datos reales, terreno con relieve, viento que interactúa con los obstáculos, sensores con ruido, Kalman, control PX4 y planificación</p>
+    </div>
+  </div>
+  <div class="controls">
+    <label class="field">Misión <select id="mode"></select></label>
+    <label class="field">Dron <select id="profile"></select></label>
+    <label class="field">Nivel <select id="level"></select></label>
+    <label class="field">Terreno <select id="terrain"></select></label>
+    <label class="field">Densidad <select id="density"></select></label>
+    <label class="field">Meta <select id="goal-kind"></select></label>
+    <label class="field" title="Solo en modo carrera: la plataforma va sobre un vehículo">Objetivo <select id="motion"></select></label>
+    <label class="field">Semilla <input id="seed" type="text" inputmode="numeric" placeholder="aleatoria" size="7"></label>
+    <label class="field">Viento <span class="rng"><input id="wind" type="range" min="0" max="14" step="0.5" value="4"><b id="wind-v">4 m/s</b></span></label>
+    <label class="field">Dirección <span class="rng"><input id="wdir" type="range" min="0" max="359" step="1" value="60"><b id="wdir-v">60°</b></span></label>
+    <label class="field">Ráfagas <select id="gusts"><option value="0">Ninguna</option><option value="1" selected>Ligeras</option><option value="2">Moderadas</option><option value="3">Fuertes</option></select></label>
+    <label class="field">Sensores <select id="noise"></select></label>
+    <label class="field">Lluvia <select id="rain"></select></label>
+    <button id="btn-new" class="btn">Nuevo vuelo</button>
+    <button id="btn-play" class="btn primary">▶ Volar</button>
+    <label class="field">Velocidad <select id="speed"><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+    <label class="field">Cámara <select id="camera"><option value="chase">Persecución</option><option value="orbit">Libre</option><option value="top">Cenital</option></select></label>
+    <div class="checks">
+      <label class="check"><input id="precision" type="checkbox" checked> Aterrizaje de precisión</label>
+      <label class="check"><input id="cp" type="checkbox" checked> Collision Prevention</label>
+      <label class="check"><input id="show-rays" type="checkbox" checked> Rayos</label>
+      <label class="check"><input id="show-gps" type="checkbox" checked> GPS / estimación</label>
+    </div>
+  </div>
+</header>
+
+<main class="layout">
+  <section class="view-col">
+    <div class="viewport" id="viewport">
+      <div class="hud">
+        <div><span>Tiempo</span><b id="h-time">0.0 s</b></div>
+        <div><span>Fase</span><b id="h-phase">—</b></div>
+        <div><span>Velocidad</span><b id="h-speed">0.0 m/s</b></div>
+        <div><span>Altura</span><b id="h-alt">0.0 m</b></div>
+        <div><span>Inclinación</span><b id="h-tilt">0°</b></div>
+        <div><span>Viento aquí</span><b id="h-wind">0.0 m/s</b></div>
+        <div><span>Batería</span><b id="h-bat">100 %</b></div>
+      </div>
+      <div class="compass" id="compass"><canvas id="compass-c" width="96" height="96"></canvas></div>
+      <div class="banner hidden" id="banner"></div>
+      <div class="legend">
+        <span><i class="grad"></i>trayectoria: lenta → rápida</span>
+        <span><i style="background:#f97316"></i>posición estimada</span>
+        <span><i style="background:#e879f9"></i>lecturas GPS</span>
+        <span><i style="background:#93c5fd"></i>viento (más lento tras obstáculos)</span>
+        <span><i style="background:#facc15"></i>objetivo: recorrido y punto de intercepción</span>
+      </div>
+      <div class="loading" id="loading">Cargando escena 3D…</div>
+    </div>
+    <div class="charts">
+      <div class="card">
+        <div class="card-head"><h3>Velocidad real vs. planificada</h3><span class="muted" id="c-speed"></span></div>
+        <canvas id="chart-speed" height="120"></canvas>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>Error de estimación y viento</h3><span class="muted" id="c-err"></span></div>
+        <canvas id="chart-err" height="120"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="card">
+      <div class="card-head"><h3>Estado del vuelo</h3><span class="pill" id="phase-pill">—</span></div>
+      <div class="kv">
+        <div><span>Velocidad / plan</span><b id="k-speed">—</b></div>
+        <div><span>Velocidad vertical</span><b id="k-vz">—</b></div>
+        <div><span>Aceleración</span><b id="k-acc">—</b></div>
+        <div><span>Empuje</span><b id="k-thrust">—</b></div>
+        <div><span>Error del filtro</span><b id="k-est">—</b></div>
+        <div><span>Medidas descartadas</span><b id="k-rej">—</b></div>
+        <div><span>Replanificaciones</span><b id="k-replan">—</b></div>
+        <div><span>Potencia</span><b id="k-power">—</b></div>
+        <div><span>Trayectoria</span><b id="k-traj">—</b></div>
+        <div><span>Vel. máxima</span><b id="k-vmax">—</b></div>
+        <div><span>Objetivo: distancia</span><b id="k-tdist">—</b></div>
+        <div><span>Objetivo: velocidad</span><b id="k-tvel">—</b></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>Perfil del dron</h3><span class="muted">datos reales</span></div>
+      <div class="kv" id="profile-kv"></div>
+      <p class="muted small" id="profile-src"></p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h3>Resultados de la sesión</h3></div>
+      <div class="kv">
+        <div><span>Vuelos</span><b id="r-n">0</b></div>
+        <div><span>En la plataforma</span><b id="r-ok">—</b></div>
+        <div><span>Fuera de ella</span><b id="r-miss">—</b></div>
+        <div><span>Choques / otros</span><b id="r-bad">—</b></div>
+        <div><span>Tiempo medio</span><b id="r-time">—</b></div>
+        <div><span>Error de aterrizaje</span><b id="r-land">—</b></div>
+        <div><span>Mejor tiempo de carrera</span><b id="r-best">—</b></div>
+      </div>
+    </div>
+
+    <details class="card" open>
+      <summary><h3>Cómo funciona</h3></summary>
+      <ol class="rules">
+        <li><b>Física (200 Hz):</b> el dron solo acelera inclinándose; empuje, arrastre deducido de la velocidad máxima del fabricante, inercia de motores y actitud.</li>
+        <li><b>Terreno:</b> plano, colinas, montañoso o precipicios; los obstáculos se apoyan en él y se puede aterrizar en azoteas y cimas.</li>
+        <li><b>Viento:</b> medio con cizalladura según la altura + ráfagas Dryden (MIL-F-8785C). Los edificios, árboles y montañas crean <b>estelas de abrigo</b> (menos viento, más turbulencia) y el viento se acelera sobre azoteas y cimas.</li>
+        <li><b>Lluvia:</b> reduce el alcance y la precisión de telémetros, cámara y GPS, y añade arrastre.</li>
+        <li><b>Sensores con ruido:</b> IMU, GPS con deriva, barómetro, brújula, 40 telémetros y cámara inferior.</li>
+        <li><b>Filtro de Kalman</b> (como el EKF2 de PX4) con puertas de innovación: el dron vuela con lo que <i>cree</i> saber, nunca con la posición real.</li>
+        <li><b>Planificación:</b> A* sobre campo de distancias, estirado de cuerda, suavizado y perfil de velocidad óptimo en tiempo: rápido en rectas, frena antes de las curvas.</li>
+        <li><b>Control en cascada PX4</b> (posición → velocidad → aceleración → inclinación) con las ganancias por defecto de PX4, y <b>Collision Prevention</b> con los telémetros.</li>
+        <li><b>Misión:</b> <i>aterrizar</i> (despegue → crucero → aproximación → aterrizaje de precisión) o <i>carrera</i> (lo más rápido posible, cruzando la meta sin frenar). En carrera, el objetivo puede ir sobre un <b>vehículo en movimiento</b> (suave, medio, rápido o variable): el dron lo sigue con un <b>filtro de Kalman</b>, vuela al <b>punto de intercepción</b> y, con línea de visión, pasa a <b>persecución predictiva</b>.</li>
+        <li><b>Seguridad:</b> nunca vuela más rápido de lo que le dejan frenar sus sensores, y deja más margen a los obstáculos cuanto peor es su GPS.</li>
+      </ol>
+    </details>
+  </section>
+</main>
+
+<div class="toast hidden" id="toast"></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>
