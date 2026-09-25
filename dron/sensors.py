@@ -19,6 +19,8 @@
     visión inferior     10 Hz        otra cámara de profundidad igual, 16 × 12 rayos, mirando HACIA ABAJO (los DJI
                                      Mini 3 y Matrice 350 llevan visión inferior): mapa del suelo y de lo que hay
                                      debajo, y freno de la bajada sobre copas y arbustos.
+    cámara de            2 Hz        (fase 3, búsqueda) detecta la plataforma dentro de su cono si nada la tapa, con
+    detección                        probabilidad según su tamaño en la imagen; 1 % de falsas alarmas (ver search.py)
     cámara inferior     20 Hz        posición relativa de la plataforma (aterrizaje de precisión, como el
                                      IR-LOCK de PX4) si está a menos de 5 m en horizontal y 10 m por encima; σ 5 cm
 
@@ -31,6 +33,8 @@ import random
 from typing import Dict, List, Optional
 
 import numpy as np
+
+from .search import CAM_HALF_FOV, DET_HZ, FALSE_ALARM, cam_axis, in_cone, p_detect
 
 NOISE_LEVELS = {"ideal": 0.0, "realista": 1.0, "alto": 2.0}
 RAIN = {"no": dict(range=1.0, noise=1.0, drop=0.0, gps=1.0, cam=5.0, drag=1.0),
@@ -76,28 +80,35 @@ def depth_down_dirs(yaw: float) -> np.ndarray:
     return D / np.linalg.norm(D, axis=1, keepdims=True)
 
 
-def clearance_below(depth: Dict, radius: float) -> float:
-    """Distancia vertical a lo más alto que hay bajo el dron (dentro de un círculo de `radius` m alrededor de su
-    vertical), medida con la cámara inferior. Infinito si no ve nada."""
+def clearance_below(depth: Dict, radius: float, ahead=(0.0, 0.0)) -> float:
+    """Distancia vertical a lo más alto que hay bajo el dron, medida con la cámara inferior: dentro de un círculo de
+    `radius` m alrededor de su vertical y a lo largo del tramo hasta donde estará en breve (`ahead`, en el plano).
+    Así ve la copa de un árbol que tiene debajo y un poco por delante. Infinito si no ve nada."""
     d, D = depth["dist"], depth["dirs"]
     ok = np.isfinite(d) & (d < depth["max"] - 1e-3)
     rel = D[ok] * d[ok, None]
-    rel = rel[np.hypot(rel[:, 0], rel[:, 1]) <= radius]
+    a = np.asarray(ahead, float)
+    L2 = float(a @ a)
+    s = np.clip((rel[:, :2] @ a) / L2, 0.0, 1.0) if L2 > 1e-9 else np.zeros(len(rel))
+    gap = np.linalg.norm(rel[:, :2] - s[:, None] * a, axis=1)   # distancia al tramo [0, ahead]
+    rel = rel[gap <= radius]
     return float(-rel[:, 2].max()) if len(rel) else math.inf
 
 
 SECTORS = 72  # OBSTACLE_DISTANCE de MAVLink / Collision Prevention de PX4: 72 sectores de 5°
 
 
-def depth_sectors(depth: Dict, band: float) -> List[Dict]:
+def depth_sectors(depth: Dict, band: float, band_down: float = None) -> List[Dict]:
     """Comprime la imagen de profundidad en sectores horizontales, como hace el ordenador de a bordo para la
     Collision Prevention de PX4 (mensaje OBSTACLE_DISTANCE): en cada sector de 5°, la distancia horizontal a lo más
-    cercano dentro de una franja vertical de ±`band` m alrededor del dron (lo de más abajo es el suelo).
+    cercano dentro de una franja vertical de ±`band` m alrededor del dron (lo de más abajo es el suelo; hacia abajo
+    la franja llega a `band_down` si se da: al bajar, lo que tiene delante y debajo también cuenta).
     Usa la medida RELATIVA de la cámara (dirección × distancia): no depende del GPS."""
     d, D = depth["dist"], depth["dirs"]
     ok = np.isfinite(d) & (d < depth["max"] - 1e-3)
     rel = D[ok] * d[ok, None]
-    rel = rel[np.abs(rel[:, 2]) <= band]
+    lo = band if band_down is None else band_down
+    rel = rel[(rel[:, 2] <= band) & (rel[:, 2] >= -lo)]
     if not len(rel):
         return []
     hd = np.hypot(rel[:, 0], rel[:, 1])
@@ -135,7 +146,8 @@ class Sensors:
         self.gps_drift = GaussMarkov(0.8 * profile.gps_sigma * m, 30.0, self.rng)
         self.baro_drift = GaussMarkov(0.3 * m, 60.0, self.rng, dim=1)
         self.t = 0.0
-        self.next = {"gps": 0.0, "baro": 0.0, "rng": 0.0, "depth": 0.0}
+        self.next = {"gps": 0.0, "baro": 0.0, "rng": 0.0, "depth": 0.0, "det": 0.0}
+        self.detect_on = False  # cámara de detección: solo en la misión de búsqueda (fase 3)
         self.np_rng = np.random.default_rng(seed)
         self.last_gps: Optional[np.ndarray] = None
         self.last_rays: List[Dict] = []
@@ -170,8 +182,10 @@ class Sensors:
             self.next["rng"] = t + 0.05
             rays = []
             rmax = self.range
-            for label, d in ray_dirs(yaw):
-                true = world.ray(tuple(p), d, rmax)
+            dirs = ray_dirs(yaw)
+            trues = world.rays(p, np.array([d for _, d in dirs]), rmax)   # los 40 a la vez (misma geometría)
+            for (label, d), true in zip(dirs, trues):
+                true = float(true)
                 meas = true + self._n((0.02 * true + 0.02) * self.rain["noise"])
                 if self.rng.random() < 0.02 * self.m + self.rain["drop"]:
                     meas = rmax  # lectura perdida
@@ -188,7 +202,51 @@ class Sensors:
             self.next["depth"] = t + 1.0 / DEPTH_HZ
             out["depth"] = self.depth(p, yaw, world)
             out["depth_down"] = self.depth(p, yaw, world, down=True)
+        if self.detect_on and t >= self.next["det"]:
+            self.next["det"] = t + 1.0 / DET_HZ
+            out["detect"] = self.detect(p, yaw, world)
         return out
+
+    def detect_vehicle(self, p, yaw, world, target, aim=None):
+        """(fase 4) Cámara de detección en un GIMBAL que sigue al vehículo, como el ActiveTrack de DJI: apunta a donde
+        el dron predice que está (`aim`) o, si lo ha perdido, al frente y hacia abajo. Lo ve si cae dentro del cono de
+        82°, nada lo tapa y según su tamaño en la imagen. Devuelve la posición RELATIVA medida o None."""
+        g = self.np_rng
+        rel = np.asarray(target, float) - p
+        dist = float(np.linalg.norm(rel))
+        if aim is not None:
+            axis = np.asarray(aim, float) - p
+            ok = rel @ axis >= dist * np.linalg.norm(axis) * math.cos(CAM_HALF_FOV)
+        else:
+            ok = in_cone(rel, yaw)[0]
+        if ok and world.ray(tuple(p), tuple(rel / dist), dist) >= dist - 0.4 \
+                and g.random() < float(p_detect(dist, self.rain["range"])):
+            return rel + g.normal(0, (0.02 * dist + 0.1) * max(self.m, 0.1), 3)
+        return None
+
+    def detect(self, p, yaw, world) -> Dict:
+        """Una imagen de la cámara de detección: posición RELATIVA medida de la plataforma, o None.
+        `false`: si la detección es una falsa alarma (solo para la evaluación; el dron no lo sabe)."""
+        g = self.np_rng
+        rf = self.rain["range"]
+        goal = np.array(world.goal, float)
+        rel = goal - p
+        dist = float(np.linalg.norm(rel))
+        visible = in_cone(rel, yaw)[0] and world.ray(tuple(p), tuple(rel / dist), dist) >= dist - 0.3
+        if visible and g.random() < float(p_detect(dist, rf)):
+            s = (0.02 * dist + 0.1) * max(self.m, 0.1)
+            return {"rel": rel + g.normal(0, s, 3), "false": False}
+        if self.m > 0 and g.random() < FALSE_ALARM * self.m:  # sensores ideales: sin falsas alarmas
+            # algo que parece la plataforma en un punto al azar de lo que ve la cámara
+            a = cam_axis(yaw)
+            for _ in range(10):
+                d = a + g.normal(0, math.tan(CAM_HALF_FOV) / 2, 3)
+                d /= np.linalg.norm(d)
+                if in_cone(d, yaw)[0]:
+                    t = world.ray(tuple(p), tuple(d), 40.0)
+                    if t < 40.0:
+                        return {"rel": d * t, "false": True}
+        return {"rel": None, "false": False}
 
     def depth(self, p, yaw, world, down: bool = False) -> Dict:
         """Imagen de profundidad: direcciones y distancias medidas (NaN = píxel sin dato)."""

@@ -12,6 +12,10 @@ Modo de mapa (`map_mode`):
     salen de ese mapa. El telémetro inferior ya no corrige la altura absoluta (haría falta conocer el terreno):
     la altura sale del GPS y el barómetro, como en PX4 cuando no hay estimación del terreno.
   El mundo real se sigue usando para la física, los sensores y la evaluación, y para generar un mundo con camino.
+
+Búsqueda (`search`, fase 3): "no" (la meta es conocida) o una estrategia de search.py ("barrido", "fronteras",
+"bayesiana"). El dron solo sabe la zona de búsqueda; la cámara de detección (sensors.py) le dice si ve la meta. La
+creencia usa el suelo y la oclusión según el mapa del dron (el real o el aprendido). Tiempo máximo: 300 s.
 """
 import math
 import random
@@ -26,11 +30,15 @@ from .mapping import OccupancyMap
 from .mission import GATE_RADIUS, PAD_RADIUS, Mission
 from .params import PROFILES
 from .planning import ClearanceGrid, astar, MARGIN
+from .search import SEARCH_MODES, Searcher, make_area
+from .target import EvaderMotion
 from .sensors import NOISE_LEVELS, RAIN, Sensors, clearance_below, depth_sectors
 from .wind import Wind
-from .world import LENGTH, WIDTH, make_world
+from .world import CEILING, LENGTH, WIDTH, make_world
 
 MAP_MODES = ("conocido", "desconocido")
+# fases de vuelo en las que protegen la altura mínima y la visión (frontal en sectores e inferior)
+FLIGHT_PHASES = ("crucero", "carrera", "persecución", "reintento", "búsqueda", "confirmación")
 DT = 0.005
 MAX_TIME = 150.0
 
@@ -54,7 +62,15 @@ class Simulation:
                  wind_speed: float = 0.0, wind_dir: float = 0.0, gusts: int = 0, noise: str = "realista",
                  precision_landing: bool = True, collision_prevention: bool = True, terrain: str = "plano",
                  density: str = "normal", goal_kind: str = "suelo", mode: str = "aterrizar", rain: str = "no",
-                 motion: str = "fija", map_mode: str = "conocido"):
+                 motion: str = "fija", map_mode: str = "conocido", search: str = "no", shared=None):
+        """`shared` (fase 5, enjambre): {"world", "grid", "searcher", "start", "id", "agl"} para que varios drones
+        compartan el mundo y la creencia de la búsqueda (se comunican). Cada uno tiene su física, sensores,
+        filtro, mapa, control y misión."""
+        if search not in SEARCH_MODES:
+            raise ValueError("Búsqueda desconocida %r" % search)
+        if search != "no":  # se busca una plataforma quieta en el suelo, azotea o cima
+            motion = "fija"
+            goal_kind = "suelo" if goal_kind == "aire" else goal_kind
         if map_mode not in MAP_MODES:
             raise ValueError("Modo de mapa desconocido %r" % map_mode)
         if profile not in PROFILES:
@@ -64,21 +80,27 @@ class Simulation:
         if rain not in RAIN:
             raise ValueError("Lluvia desconocida %r" % rain)
         self.prof = PROFILES[profile]
-        self.world, self.grid = make_flyable_world(level, seed, self.prof.radius, goal_kind, terrain, density,
-                                                   mode == "carrera", motion)
+        shared = shared or {}
+        self.id = shared.get("id", 0)
+        if "world" in shared:
+            self.world, self.grid = shared["world"], shared["grid"]
+        else:
+            self.world, self.grid = make_flyable_world(level, seed, self.prof.radius, goal_kind, terrain, density,
+                                                       mode == "carrera", motion)
         seed = self.world.seed
         self.config = {"profile": profile, "level": level, "seed": seed, "wind_speed": wind_speed,
                        "wind_dir": wind_dir, "gusts": gusts, "noise": noise, "precision_landing": precision_landing,
                        "collision_prevention": collision_prevention, "terrain": terrain, "density": density,
                        "goal_kind": self.world.goal_kind, "mode": mode, "rain": rain,
-                       "motion": self.world.motion.kind if self.world.motion else "fija", "map_mode": map_mode}
+                       "motion": self.world.motion.kind if self.world.motion else "fija", "map_mode": map_mode,
+                       "search": search}
         self.mode = mode
         self.collision_prevention = collision_prevention
-        yaw = random.Random(seed).uniform(-math.pi, math.pi)
-        self.drone = Multirotor(self.prof, self.world.start, yaw)
+        yaw = random.Random(seed + 101 * self.id).uniform(-math.pi, math.pi)
+        self.drone = Multirotor(self.prof, shared.get("start", self.world.start), yaw)
         self.drone.drag_mult = RAIN[rain]["drag"]
         self.wind = Wind(wind_speed, wind_dir, gusts, seed, self.world)
-        self.sensors = Sensors(self.prof, noise, seed + 1, rain)
+        self.sensors = Sensors(self.prof, noise, seed + 1 + 1000 * self.id, rain)
         self.est = Estimator(self.drone.p.copy(), self.prof.gps_sigma, NOISE_LEVELS[noise])
         self.ctrl = PositionController(self.prof)
         self.map = OccupancyMap() if map_mode == "desconocido" else None
@@ -86,8 +108,26 @@ class Simulation:
         self.sensors.depth_on = self.map is not None or collision_prevention
         self._sectors = []
         self._below = math.inf
+        self.searcher = None
+        self.max_time = MAX_TIME
+        if search != "no":
+            self.area = make_area(self.world, seed)
+            self.searcher = shared.get("searcher") or Searcher(self.area, search, self._surface_belief,
+                                                               self._visible_belief, RAIN[rain]["range"])
+            self.sensors.detect_on = True
+            self.max_time = 300.0
         self.mission = Mission(self.world, self.grid, self.prof, precision_landing, mode, self.sensors.range,
-                               self.map)
+                               self.map, self.searcher)
+        self.evader = self.mission.evader
+        self.mission.make_searcher = lambda area, center: Searcher(
+            area, "bayesiana", self._surface_belief, self._visible_belief, RAIN[rain]["range"], prior=(center, 5.0),
+            target_speed=EvaderMotion.VMAX)
+        if self.evader:
+            self.max_time = 300.0
+        self.mission.id = self.id
+        self.mission.search_agl = shared.get("agl", 0.0)   # capa de altura propia (separación en enjambre)
+        self.mission.visible_fn = self._visible_belief       # la oclusión, con el mapa de ESTE dron
+        self.neighbors = []                                  # [(posición estimada, radio)] de los demás drones
         self.mission.yaw = yaw
         self.mission.est = self.est
         self.t = 0.0
@@ -127,7 +167,17 @@ class Simulation:
         est.predict(self.sensors.imu(d.a, DT), DT)
         m = self.mission
         r = self.sensors.read(self.t, d.p, d.v, d.yaw, self.world, (m.pad[0], m.pad[1], m.pad_z))
-        if self.world.moving and self.t >= self._next_target:  # el vehículo emite su posición a 5 Hz
+        if self.evader:
+            self.world.motion.step(self.t, d.p)                    # el vehículo reacciona al dron
+        if self.evader and self.t >= self._next_target:           # la cámara en gimbal lo busca a 5 Hz
+            self._next_target = self.t + 0.2
+            r["evader_look"] = True
+            gx, gy, gz = self.world.goal_at(self.t)
+            rel = self.sensors.detect_vehicle(d.p, d.yaw, self.world, (gx, gy, gz - 0.3), m.gimbal_aim())
+            if rel is not None:                                   # posición medida = estimada + relativa
+                q = est.p + rel
+                r["target"], r["target_z"] = (q[0], q[1]), q[2] + 0.3
+        elif self.world.moving and self.t >= self._next_target:  # el vehículo emite su posición a 5 Hz
             self._next_target = self.t + 0.2
             gx, gy, _ = self.world.goal_at(self.t)
             s = 0.3 * max(self.sensors.m, 0.1)
@@ -139,8 +189,10 @@ class Simulation:
         if "baro" in r:
             est.baro(r["baro"])
         if "depth" in r:
-            self._sectors = depth_sectors(r["depth"], self.prof.radius + 0.5)
-            self._below = clearance_below(r["depth_down"], self.prof.radius + 0.5)
+            band = self.prof.radius + 0.5
+            vz = float(est.v[2])
+            self._sectors = depth_sectors(r["depth"], band, band + max(0.0, -vz) * 0.8)
+            self._below = clearance_below(r["depth_down"], band, est.v[:2] * 0.6)
         if self.map is not None:  # el mapa se construye desde donde el dron CREE estar
             if "rays" in r:
                 self.map.insert(est.p, [x["dir"] for x in r["rays"]], [x["dist"] for x in r["rays"]], self.sensors.range)
@@ -175,7 +227,7 @@ class Simulation:
         if m.plan_error:
             self.status, self.cause = "crash", m.plan_error
             return
-        if m.phase in ("crucero", "carrera", "persecución", "reintento"):
+        if m.phase in FLIGHT_PHASES:
             # altura mínima sobre la superficie (debajo y 0,8 s por delante): no rozar el borde de una meseta
             ahead = est.p + est.v * 0.8
             if self.map is None:
@@ -197,7 +249,15 @@ class Simulation:
                 ((1.0, 0.0, 0.0), LENGTH - ex), ((-1.0, 0.0, 0.0), ex), ((0.0, 1.0, 0.0), WIDTH - ey), ((0.0, -1.0, 0.0), ey))
                 if dd < self.sensors.range]
             rays = self.sensors.last_rays + fence
-            if m.phase in ("crucero", "carrera", "persecución", "reintento"):
+            for q, rad in self.neighbors:   # enjambre: los demás drones (posición compartida por radio) como obstáculos
+                v = np.asarray(q) - est.p
+                dq = float(np.linalg.norm(v))
+                if 1e-6 < dq < self.sensors.range:
+                    # con su propia distancia de seguridad: así cuenta aunque esté debajo (los rayos hacia abajo
+                    # sin ella se ignoran, porque suelen ver el suelo)
+                    rays = rays + [{"label": "dron", "dir": tuple(v / dq), "dist": max(dq - rad, 0.05),
+                                    "d_safe": self.prof.radius + 1.0}]
+            if m.phase in FLIGHT_PHASES:
                 # en vuelo, la cámara de profundidad (en sectores, como PX4) ve lo que el anillo horizontal no ve:
                 # la copa de un árbol unos centímetros por debajo del plano de los telémetros
                 rays = rays + self._sectors
@@ -223,8 +283,32 @@ class Simulation:
                                  "alt": round(d.p[2], 2), "err": round(float(np.linalg.norm(est.p - d.p)), 3),
                                  "wind": round(float(np.linalg.norm(self.wind_now[:2])), 2)})
             self.history = self.history[-600:]
-        if self.t > MAX_TIME:
+        if self.t > self.max_time:
             self.status, self.cause = "timeout", "tiempo agotado"
+
+    # ------------------------------------------------------------------ lo que sabe el dron (búsqueda)
+    def _surface_belief(self, x, y):
+        """Altura del suelo en (x, y) según el dron: el mundo si lo conoce; si no, lo que ha visto (o, sin datos,
+        la altura del suelo del despegue)."""
+        if self.map is None:
+            return self.world.surface(x, y)
+        s = self.map.surface(x, y, CEILING)
+        return s if math.isfinite(s) else getattr(self.mission, "hold_ground", self.world.start[2])
+
+    def _visible_belief(self, origin, pts):
+        """¿Ve la cámara cada punto? Oclusión según el mapa del dron (el real o el aprendido; lo desconocido no
+        tapa)."""
+        rel = pts - origin
+        dist = np.linalg.norm(rel, axis=1)
+        dirs = rel / dist[:, None]
+        if self.map is None:
+            return self.world.rays(origin, dirs, float(dist.max()) + 1.0) >= dist - 0.5
+        g = self.map.grid()
+        steps = np.arange(0.5, float(dist.max()), 0.5)
+        P = origin + dirs[:, None, :] * steps[None, :, None]            # N × S × 3
+        inside = steps[None, :] < (dist[:, None] - 1.0)                 # sin contar el último metro (el suelo)
+        solid = g.clearance_many(P.reshape(-1, 3)).reshape(P.shape[:2]) < -0.2
+        return ~(solid & inside).any(axis=1)
 
     # ------------------------------------------------------------------ para la interfaz / evaluación
     def battery(self) -> float:
@@ -252,10 +336,19 @@ class Simulation:
             "rays": [{"label": x["label"], "dist": round(x["dist"], 2),
                       "end": (d.p + np.array(x["dir"]) * x["dist"]).round(2).tolist()} for x in self.sensors.last_rays],
             "battery": self.battery(), "power_w": d.power(), "replans": m.replans,
-            "pad": m.pad.round(3).tolist(), "pad_est": m.pad_est.round(3).tolist(),
+            "pad": m.pad.round(3).tolist(), "pad_est": (m.pad if m.pad_est is None else m.pad_est).round(3).tolist(),
             "max_speed": self.max_speed, "rejected": self.est.rejected, "ekf_resets": self.est.resets,
             "distance": self.distance, "map_mode": self.config["map_mode"],
         }
+        if self.searcher is not None:
+            out["found_t"] = m.found_t
+        if m.search is not None:
+            if full or self.t - getattr(self, "_search_sent", -9.0) >= 0.5 or self.done:
+                out["search"] = m.search.to_dict()
+                self._search_sent = self.t
+        if self.evader:
+            out["lost"] = m.lost_count
+            out["seen_ago"] = round(self.t - m.last_seen_t, 1)
         if self.map is not None:
             out["map_replans"] = m.map_replans
             out["explored"] = self.map.explored_fraction()

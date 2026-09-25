@@ -7,8 +7,11 @@
      * suave     ~1 m/s, giros suaves;
      * medio     ~2,5 m/s;
      * rápido    ~5 m/s;
-     * variable  cambia de velocidad (0-6 m/s) cada pocos segundos, a veces se para y gira bruscamente.
-   Todo el recorrido se precalcula con la semilla, así es reproducible: `position(t)` y `velocity(t)`.
+     * variable  cambia de velocidad (0-6 m/s) cada pocos segundos, a veces se para y gira bruscamente;
+     * huye      (fase 4, `EvaderMotion`) pasea a 1,5 m/s hasta que ve al dron a menos de 30 m; entonces HUYE a
+                 5 m/s eligiendo el rumbo que más lo aleja y, sobre todo, el que lo esconde tras un obstáculo
+                 (persecución-evasión). Como depende del dron, se simula en vuelo (`step`), no se precalcula.
+   Los demás recorridos se precalculan con la semilla, así son reproducibles: `position(t)` y `velocity(t)`.
 
 2. SEGUIMIENTO (`TargetTracker`): el objetivo emite su posición como un rastreador GNSS (5 Hz, ruido de 0,3 m). El
    dron la filtra con un filtro de Kalman de velocidad constante (estado: posición y velocidad en el plano), el
@@ -24,7 +27,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-MOTIONS = ("fija", "suave", "medio", "rápido", "variable")
+MOTIONS = ("fija", "suave", "medio", "rápido", "variable", "huye")
 SPEEDS = {"suave": 1.0, "medio": 2.5, "rápido": 5.0, "variable": 3.0}
 DT = 0.05
 HORIZON = 240.0  # s de recorrido precalculado
@@ -140,6 +143,116 @@ class TargetMotion:
     def track(self, t0: float, t1: float, step: float = 0.5):
         """Recorrido entre t0 y t1 (para dibujar lo que le queda por delante)."""
         return [self.position(t) for t in np.arange(t0, t1, step)]
+
+
+def make_motion(world, start_xy, kind: str, seed: int):
+    return EvaderMotion(world, start_xy, seed) if kind == "huye" else TargetMotion(world, start_xy, kind, seed)
+
+
+def _clear(world, p) -> bool:
+    """¿Puede estar el vehículo en p? (dentro de la arena, pendiente suave, lejos de obstáculos)."""
+    from .world import LENGTH, WIDTH
+    if not (3 < p[0] < LENGTH - 3 and 3 < p[1] < WIDTH - 3):
+        return False
+    if world.terrain.slope(p[0], p[1]) > 0.4:
+        return False
+    z = world.terrain.height(p[0], p[1]) + 0.5
+    return all(o.distance((p[0], p[1], z)) > 1.6 for o in world.obstacles)
+
+
+class EvaderMotion:
+    """Vehículo que huye del dron (fase 4). Decide dos veces por segundo:
+      * si ve al dron (a menos de 30 m y con línea de visión) o lo vio hace poco, HUYE: de 16 rumbos posibles,
+        los que tienen 6 m libres por delante, elige el que maximiza distancia al dron + 12 m si ese punto queda
+        OCULTO para el dron (detrás de un edificio o un árbol) − cuánto tiene que girar;
+      * si no, pasea a 1,5 m/s con giros suaves.
+    Acelera 3 m/s² hasta 5 m/s (un vehículo terrestre pequeño). Guarda su historia para `position(t)`."""
+
+    VMAX, WANDER, ACC, ALERT = 5.0, 1.5, 3.0, 30.0
+
+    def __init__(self, world, start_xy, seed: int):
+        self.kind = "huye"
+        self.world = world
+        self.rng = random.Random(seed * 7 + 5)
+        self.T, self.P, self.V = [0.0], [np.array(start_xy, float)], [np.zeros(2)]
+        self.heading = self.rng.uniform(-math.pi, math.pi)
+        self.speed, self.goal_speed = 0.0, self.WANDER
+        self.fleeing, self.last_alert, self.next_decide = False, -99.0, 0.0
+        self.waypoints = [tuple(start_xy)]
+        self.threats = None   # enjambre: posiciones de todos los drones (huye del más cercano)
+
+    def _sees(self, pos, drone_p) -> bool:
+        z = self.world.terrain.height(pos[0], pos[1]) + 0.6
+        rel = np.array([pos[0], pos[1], z]) - np.asarray(drone_p, float)
+        d = float(np.linalg.norm(rel))
+        if d > self.ALERT:
+            return False
+        return self.world.ray(tuple(drone_p), tuple(rel / d), d) >= d - 0.5
+
+    def step(self, t: float, drone_p):
+        """Avanza hasta el instante t sabiendo dónde está el dron (lo ve o lo oye, como un vehículo real)."""
+        while self.T[-1] + DT <= t + 1e-9:
+            now = self.T[-1] + DT
+            pos = self.P[-1]
+            if self.threats:   # varios drones: reacciona al más cercano
+                drone_p = min(self.threats, key=lambda q: float(np.hypot(q[0] - pos[0], q[1] - pos[1])))
+            if now >= self.next_decide:
+                self.next_decide = now + 0.5
+                if self._sees(pos, drone_p):
+                    self.last_alert = now
+                self.fleeing = now - self.last_alert < 4.0
+                self._decide(pos, drone_p)
+            v_goal = self.VMAX if self.fleeing else self.WANDER
+            dv = self.ACC * DT
+            self.speed = min(v_goal, self.speed + dv) if self.speed < v_goal else max(v_goal, self.speed - dv)
+            d = np.array([math.cos(self.heading), math.sin(self.heading)])
+            new = pos + d * self.speed * DT
+            if not _clear(self.world, new):   # algo delante: frena y decide otra vez
+                new, self.speed, self.next_decide = pos.copy(), 0.0, now
+            self.T.append(now)
+            self.P.append(new)
+            self.V.append((new - pos) / DT)
+
+    def _decide(self, pos, drone_p):
+        best, best_s = None, -1e9
+        dp = np.asarray(drone_p[:2], float)
+        for k in range(16):
+            h = self.heading + (k - 8) * (2 * math.pi / 16)
+            u = np.array([math.cos(h), math.sin(h)])
+            if not all(_clear(self.world, pos + u * s) for s in (1.5, 3.0, 4.5, 6.0)):
+                continue
+            q = pos + u * 6.0
+            turn = abs(math.atan2(math.sin(h - self.heading), math.cos(h - self.heading)))
+            if self.fleeing:
+                hidden = not self._sees(q, drone_p)
+                s = float(np.linalg.norm(q - dp)) + 12.0 * hidden - 2.0 * turn
+            else:
+                s = -turn + self.rng.uniform(0, 1.5)
+            if s > best_s:
+                best, best_s = h, s
+        if best is None:        # encerrado: media vuelta
+            best = self.heading + math.pi
+        self.heading = math.atan2(math.sin(best), math.cos(best))
+
+    def _at(self, t, arr):
+        T = self.T
+        if t >= T[-1]:
+            return arr[-1]
+        i = min(max(int(t / DT), 0), len(T) - 2)
+        f = (t - T[i]) / DT
+        return arr[i] * (1 - f) + arr[i + 1] * f
+
+    def position(self, t: float) -> Tuple[float, float]:
+        p = self._at(t, self.P)
+        return float(p[0]), float(p[1])
+
+    def velocity(self, t: float) -> Tuple[float, float]:
+        v = self._at(t, self.V)
+        return float(v[0]), float(v[1])
+
+    def track(self, t0: float, t1: float, step: float = 0.5):
+        """No se sabe adónde irá: se dibuja por dónde ha pasado en los últimos 10 s."""
+        return [self.position(t) for t in np.arange(max(0.0, t0 - 10.0), t0, step)]
 
 
 class TargetTracker:

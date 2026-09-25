@@ -24,6 +24,8 @@
   <div class="controls">
     <label class="field">Misión <select id="mode"></select></label>
     <label class="field" title="Desconocido: el dron construye su mapa con los sensores mientras vuela">Mapa <select id="map-mode"></select></label>
+    <label class="field" title="El dron no sabe dónde está la meta, solo la zona donde buscarla">Búsqueda <select id="search"></select></label>
+    <label class="field" title="Fase 5: varios drones se reparten la búsqueda, o persiguen en equipo al vehículo que huye">Drones <select id="drones"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
     <label class="field">Dron <select id="profile"></select></label>
     <label class="field">Nivel <select id="level"></select></label>
     <label class="field">Terreno <select id="terrain"></select></label>
@@ -38,6 +40,9 @@
     <label class="field">Lluvia <select id="rain"></select></label>
     <button id="btn-new" class="btn">Nuevo vuelo</button>
     <button id="btn-play" class="btn primary">▶ Volar</button>
+    <button id="btn-replay" class="btn" title="Fase 6: repetir el último vuelo desde el principio (sin volver a simularlo)">⟲ Repetir</button>
+    <button id="btn-save" class="btn" title="Guardar el registro del vuelo (JSON), como un ULog de PX4">⭳ Guardar</button>
+    <label class="btn" title="Abrir un vuelo guardado y reproducirlo">⭱ Abrir<input id="file-open" type="file" accept=".json,application/json" hidden></label>
     <label class="field">Velocidad <select id="speed"><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
     <label class="field" title="Qué dibujar: el mundo real, el mapa que ha construido el dron o los dos">Vista <select id="view"><option value="both">Mundo + mapa del dron</option><option value="map">Solo lo que sabe el dron</option><option value="world">Solo el mundo real</option></select></label>
     <label class="field">Cámara <select id="camera"><option value="chase">Persecución</option><option value="orbit">Libre</option><option value="top">Cenital</option></select></label>
@@ -73,6 +78,9 @@
         <span class="map-only"><i class="grad-map"></i>mapa del dron: celdas ocupadas (por altura)</span>
         <span class="map-only"><i style="background:#22d3ee"></i>cámara de profundidad</span>
         <span class="map-only"><i style="background:#0b1016;border:1px solid #475569"></i>zona sin explorar</span>
+        <span class="search-only"><i class="grad-prob"></i>búsqueda: probabilidad de que esté ahí</span>
+        <span class="search-only"><i style="background:#f472b6"></i>cámara de detección</span>
+        <span class="search-only"><i style="background:#f59e0b"></i>detección · <i style="background:#22c55e"></i>confirmada · <i style="background:#64748b"></i>falsa alarma</span>
       </div>
       <div class="loading" id="loading">Cargando escena 3D…</div>
     </div>
@@ -104,10 +112,16 @@
         <div><span>Vel. máxima</span><b id="k-vmax">—</b></div>
         <div><span>Objetivo: distancia</span><b id="k-tdist">—</b></div>
         <div><span>Objetivo: velocidad</span><b id="k-tvel">—</b></div>
+        <div><span>Veces que lo perdió</span><b id="k-lost">—</b></div>
         <div><span>Mapa</span><b id="k-map">—</b></div>
         <div><span>Explorado</span><b id="k-explored">—</b></div>
         <div><span>Replanif. por el mapa</span><b id="k-mapreplan">—</b></div>
         <div><span>Distancia recorrida</span><b id="k-dist">—</b></div>
+        <div><span>Búsqueda</span><b id="k-search">—</b></div>
+        <div><span>Zona cubierta</span><b id="k-covered">—</b></div>
+        <div><span>Encontrada en</span><b id="k-found">—</b></div>
+        <div><span>Falsas alarmas</span><b id="k-false">—</b></div>
+        <div><span>Enjambre</span><b id="k-swarm">—</b></div>
       </div>
     </div>
 
@@ -143,6 +157,9 @@
         <li><b>Control en cascada PX4</b> (posición → velocidad → aceleración → inclinación) con las ganancias por defecto de PX4, y <b>Collision Prevention</b> con los telémetros.</li>
         <li><b>Misión:</b> <i>aterrizar</i> (despegue → crucero → aproximación → aterrizaje de precisión) o <i>carrera</i> (lo más rápido posible, cruzando la meta sin frenar). En carrera, el objetivo puede ir sobre un <b>vehículo en movimiento</b> (suave, medio, rápido o variable): el dron lo sigue con un <b>filtro de Kalman</b>, vuela al <b>punto de intercepción</b> y, con línea de visión, pasa a <b>persecución predictiva</b>.</li>
         <li><b>Mapa desconocido (fase 2):</b> el dron empieza sin saber nada. Con los telémetros y una <b>cámara de profundidad</b> (campo de visión de la RealSense D435) construye un <b>mapa de ocupación 3D con log-odds</b> como OctoMap, calcula su <b>campo de distancias (ESDF)</b> y planifica sobre él tratando lo desconocido como libre. Cada vez que el mapa cambia comprueba la trayectoria y, si ya no está libre, <b>replanifica</b> sin frenar.</li>
+        <li><b>Objetivo que huye (fase 4):</b> el vehículo ya no emite su posición; al ver al dron escapa y se esconde tras edificios y árboles. El dron lo sigue con la cámara en un <b>gimbal</b> y, si lo pierde, lo busca <b>desde la última posición vista</b> con una creencia que se difunde a la velocidad máxima del vehículo.</li>
+        <li><b>Enjambre (fase 5):</b> de 2 a 4 drones comparten el mapa de probabilidad. Cada uno busca en su <b>celda de Voronoi</b> (lo que tiene más cerca que ningún otro), nunca donde ya va otro, y en su propia <b>capa de altura</b>; además se ven entre sí en Collision Prevention. Quien encuentra la meta aterriza y los demás esperan.</li>
+        <li><b>Búsqueda (fase 3):</b> la meta está en algún punto de una zona. Una <b>cámara de detección</b> (82°, 60° hacia abajo) la ve según su tamaño en la imagen si nada la tapa, con falsas alarmas. El dron mantiene un <b>mapa de probabilidad</b> que actualiza con la regla de Bayes cada vez que mira sin verla, y elige adónde ir con <b>barrido</b> (cortacésped), <b>fronteras</b> (como FUEL) o <b>búsqueda bayesiana</b>. Antes de creerse una detección, la <b>confirma</b> de cerca.</li>
         <li><b>Seguridad:</b> nunca vuela más rápido de lo que le dejan frenar sus sensores, y deja más margen a los obstáculos cuanto peor es su GPS.</li>
       </ol>
     </details>

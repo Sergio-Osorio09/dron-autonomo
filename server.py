@@ -19,7 +19,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dron.mission import MODES
 from dron.params import PROFILES
 from dron.sensors import NOISE_LEVELS, RAIN
+from dron.search import SEARCH_MODES
 from dron.sim import MAP_MODES, Simulation
+from dron.swarm import SWARM_MAX, Swarm
 from dron.target import MOTIONS
 from dron.world import DENSITIES, GOAL_KINDS, LEVELS, TERRAINS
 
@@ -42,7 +44,11 @@ class Session:
         self._recorded = False
 
     def reset(self, cfg):
-        sim = Simulation(
+        drones = int(cfg.get("drones", 1) or 1)
+        search = cfg.get("search", "no")
+        team = drones > 1 and (search != "no" or (cfg.get("motion") == "huye" and cfg.get("mode") == "carrera"))
+        make = (lambda **kw: Swarm(drones, **kw)) if team else Simulation
+        sim = make(
             profile=cfg.get("profile", "px4"), level=cfg.get("level", "mixto"),
             seed=int(cfg["seed"]) if str(cfg.get("seed", "")).strip() else None,
             wind_speed=float(cfg.get("wind_speed", 0)), wind_dir=float(cfg.get("wind_dir", 0)),
@@ -51,7 +57,8 @@ class Session:
             collision_prevention=bool(cfg.get("collision_prevention", True)),
             terrain=cfg.get("terrain", "plano"), density=cfg.get("density", "normal"),
             goal_kind=cfg.get("goal_kind", "suelo"), mode=cfg.get("mode", "aterrizar"), rain=cfg.get("rain", "no"),
-            motion=cfg.get("motion", "fija"), map_mode=cfg.get("map_mode", "desconocido"))
+            motion=cfg.get("motion", "fija"), map_mode=cfg.get("map_mode", "desconocido"),
+            search=cfg.get("search", "no"))
         with self.lock:
             self.gen += 1
             self.sim, self.frames, self.clock, self._recorded = sim, [], 0.0, False
@@ -94,7 +101,7 @@ class Session:
             self._recorded = True
             land = float(((s.drone.p[0] - s.mission.pad[0]) ** 2 + (s.drone.p[1] - s.mission.pad[1]) ** 2) ** 0.5)
             self.results.append({"status": s.status, "time": s.t, "land": land, "profile": s.prof.key,
-                                 "mode": s.mode, "seed": s.world.seed})
+                                 "mode": s.mode, "seed": s.world.seed, "found_t": s.mission.found_t})
         f["results"] = self.results[-200:]
         return f
 
@@ -127,7 +134,8 @@ class Handler(BaseHTTPRequestHandler):
                                     "levels": list(LEVELS), "noise": list(NOISE_LEVELS), "terrains": list(TERRAINS),
                                     "densities": list(DENSITIES), "goal_kinds": list(GOAL_KINDS),
                                     "modes": list(MODES), "rain": list(RAIN), "motions": list(MOTIONS),
-                                    "map_modes": list(MAP_MODES)})
+                                    "map_modes": list(MAP_MODES), "searches": list(SEARCH_MODES),
+                                    "swarm_max": SWARM_MAX})
         self._send(404, {"error": "No encontrado"})
 
     def do_POST(self):

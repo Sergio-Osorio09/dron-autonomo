@@ -17,12 +17,16 @@ conocen el mapa (lo que cambia en la fase 2) y el plan de la fase 2.
 - `dron/dynamics.py` es la única fuente de verdad de la física, y `dron/world.py` de la geometría.
 - La web (`ui/`) solo dibuja; three.js se carga desde jsDelivr.
 - Código y textos en español.
-- Tras cambiar física, control, sensores o planificación: `python -m pytest -q` y `python eval/eval_headless.py`.
+- Tras cambiar física, control, sensores o planificación: `python -m pytest -q` y las evaluaciones de abajo. Para
+  decidir entre dos variantes, no fiarse de 3 vuelos: `eval/bench.py` con 30 semillas y mirar el intervalo de Wilson.
 
 ## Comandos
 
 ```bash
-python -m pytest -q                                   # 23 tests, ~45 s
+python -m pytest -q                                   # 35 tests, ~1,5 min
 python server.py                                      # http://127.0.0.1:7873
-python eval/eval_headless.py --flights 2 --md eval/resultados.md   # ~4 min
+python eval/eval_headless.py --flights 1 --jobs 10 --md eval/resultados.md          # fases 1, 2 y 4, ~5 min
+python eval/eval_search.py --jobs 10 --md eval/resultados_busqueda.md               # fase 3, ~5 min
+python eval/eval_search.py --profiles px4 --conditions 0 --maps conocido --drones 1,2,3 --flights 2 --jobs 6 --md eval/resultados_enjambre.md   # fase 5
+python eval/bench.py --n 30 profile=px4 mode=carrera motion=huye level=mixto          # banco de pruebas (fase 6)
 ```

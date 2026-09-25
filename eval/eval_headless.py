@@ -3,6 +3,7 @@
     python eval/eval_headless.py                         # tabla completa (≈ 2-4 min)
     python eval/eval_headless.py --flights 3 --md eval/resultados.md
     python eval/eval_headless.py --maps desconocido        # solo con el mapa que construye el dron (fase 2)
+    python eval/eval_headless.py --jobs 12                 # combinaciones en paralelo (mismos resultados)
 """
 import argparse
 import os
@@ -10,6 +11,7 @@ import statistics
 import sys
 import time
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
 
@@ -35,6 +37,7 @@ CONDITIONS = {
     "carrera, objetivo medio": dict(mode="carrera", motion="medio", terrain="colinas", wind_speed=4, gusts=1),
     "carrera, objetivo rápido": dict(mode="carrera", motion="rápido", terrain="colinas", wind_speed=4, gusts=1),
     "carrera, objetivo variable": dict(mode="carrera", motion="variable", terrain="colinas", wind_speed=4, gusts=1),
+    "carrera, objetivo que huye (fase 4)": dict(mode="carrera", motion="huye", terrain="colinas", wind_speed=4, gusts=1),
 }
 
 
@@ -84,21 +87,24 @@ def main():
     ap.add_argument("--no-precision", action="store_true", help="aterrizar solo con GPS")
     ap.add_argument("--maps", default="conocido,desconocido", help="conocido (fase 1), desconocido (fase 2) o ambos")
     ap.add_argument("--md", default=None)
+    ap.add_argument("--jobs", type=int, default=1, help="procesos en paralelo (cada combinación es independiente)")
     a = ap.parse_args()
     t0 = time.time()
     rows = ["| perfil | condición | mapa | éxito | fuera de la plataforma | choca | tiempo medio | distancia "
             "| replanif. (por el mapa) | error de aterrizaje | error de estimación | vel. máx. | batería usada |",
             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-    for prof in a.profiles.split(","):
-        for cond in [list(CONDITIONS)[int(i)] for i in a.conditions.split(",")]:
-            for mm in a.maps.split(","):
-                r = run(prof, cond, list(LEVELS), a.flights, a.seed, not a.no_precision, mm)
-                rows.append("| %s | %s | %s | %.0f%% | %.0f%% | %.0f%% | %s | %s | %.1f (%.1f) | %s | %.2f m | %.1f m/s | %.2f%% |" % (
-                    prof, cond, mm, 100 * r["success"], 100 * r["missed"], 100 * r["crash"],
-                    "%.1f s" % r["time"] if r["time"] else "—", "%.0f m" % r["dist"] if r["dist"] else "—",
-                    r["replans"], r["map_replans"], "%.2f m" % r["land"] if r["land"] is not None else "—",
-                    r["est"], r["vmax"], r["energy"]))
-                print(rows[-1], flush=True)
+    combos = [(prof, cond, mm) for prof in a.profiles.split(",")
+              for cond in [list(CONDITIONS)[int(i)] for i in a.conditions.split(",")] for mm in a.maps.split(",")]
+    args = [(p, c, list(LEVELS), a.flights, a.seed, not a.no_precision, m) for p, c, m in combos]
+    with ProcessPoolExecutor(max_workers=max(1, a.jobs)) as pool:
+        results = pool.map(run, *zip(*args)) if a.jobs > 1 else map(run, *zip(*args))
+        for (prof, cond, mm), r in zip(combos, results):
+            rows.append("| %s | %s | %s | %.0f%% | %.0f%% | %.0f%% | %s | %s | %.1f (%.1f) | %s | %.2f m | %.1f m/s | %.2f%% |" % (
+                prof, cond, mm, 100 * r["success"], 100 * r["missed"], 100 * r["crash"],
+                "%.1f s" % r["time"] if r["time"] else "—", "%.0f m" % r["dist"] if r["dist"] else "—",
+                r["replans"], r["map_replans"], "%.2f m" % r["land"] if r["land"] is not None else "—",
+                r["est"], r["vmax"], r["energy"]))
+            print(rows[-1], flush=True)
     note = "\n%d vuelos por nivel (bosque, ciudad, mixto) y condición; aterrizaje de precisión %s.\n" % (
         a.flights, "desactivado" if a.no_precision else "activado")
     print(note + "(%.0f s)" % (time.time() - t0))

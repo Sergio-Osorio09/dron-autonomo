@@ -171,3 +171,5 @@ ol.rules { padding-left: 20px; }
 .pill.ok { background: rgba(31, 157, 99, .15); color: var(--good); }
 .legend i.grad-map { width: 30px; height: 8px; background: linear-gradient(90deg, #7c3aed, #2563eb, #14b8a6, #84cc16, #f59e0b); }
 .legend .map-only.hidden { display: none; }
+.legend i.grad-prob { width: 30px; height: 8px; background: linear-gradient(90deg, rgba(76,29,149,.5), #db2777, #fbbf24); }
+.legend .search-only.hidden { display: none; }

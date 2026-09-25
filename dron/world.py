@@ -455,8 +455,8 @@ def make_world(level: str = "mixto", seed: Optional[int] = None, goal_kind: str 
     world.goal = (gx, gy, gz)
     world.goal_support = support
     if moving:
-        from .target import TargetMotion
-        world.motion = TargetMotion(world, (gx, gy), motion, seed)
+        from .target import make_motion
+        world.motion = make_motion(world, (gx, gy), motion, seed)
         world.goal = world.goal_at(0.0)
         world.goal_support = "vehículo"
     return world

@@ -9,9 +9,10 @@ const els = {
   precision: $("precision"), cp: $("cp"), rays: $("show-rays"), gps: $("show-gps"), viewport: $("viewport"),
   toast: $("toast"), banner: $("banner"), mode: $("mode"), terrain: $("terrain"), density: $("density"),
   goalKind: $("goal-kind"), rain: $("rain"), motion: $("motion"), mapMode: $("map-mode"), view: $("view"),
+  search: $("search"), drones: $("drones"),
 };
 const PHASES = { "en tierra": "En tierra", despegue: "Despegue", crucero: "Crucero", "aproximación": "Aproximación",
-  aterrizaje: "Aterrizaje", aterrizado: "Aterrizado", carrera: "Carrera", reintento: "Volviendo a la meta", meta: "¡Meta!", "persecución": "Persecución" };
+  aterrizaje: "Aterrizaje", aterrizado: "Aterrizado", "búsqueda": "Buscando", "confirmación": "Confirmando", espera: "Esperando (otro la encontró)", carrera: "Carrera", reintento: "Volviendo a la meta", meta: "¡Meta!", "persecución": "Persecución" };
 const LABELS = {
   mode: { aterrizar: "Aterrizar en la meta", carrera: "Carrera (llegar el primero)" },
   terrain: { plano: "Plano", colinas: "Colinas", "montañoso": "Montañoso", precipicios: "Precipicios" },
@@ -19,8 +20,10 @@ const LABELS = {
   goal: { suelo: "En el suelo", azotea: "En una azotea", cima: "En una cima", aire: "En el aire (carrera)", azar: "Al azar" },
   rain: { no: "Sin lluvia", moderada: "Moderada", fuerte: "Fuerte" },
   motion: { fija: "Quieto", suave: "En movimiento: suave", medio: "En movimiento: medio", "rápido": "En movimiento: rápido",
-    variable: "En movimiento: variable" },
+    variable: "En movimiento: variable", huye: "Huye y se esconde (fase 4)" },
   map: { conocido: "Conocido (fase 1)", desconocido: "Desconocido: lo construye (fase 2)" },
+  search: { no: "No: sabe dónde está la meta", barrido: "Buscarla: barrido (cortacésped)",
+    fronteras: "Buscarla: fronteras (FUEL)", bayesiana: "Buscarla: bayesiana" },
 };
 const LEVEL_LABEL = { bosque: "Bosque", ciudad: "Ciudad", mixto: "Mixto" };
 const NOISE_LABEL = { ideal: "Ideales (sin ruido)", realista: "Realistas", alto: "Ruido alto" };
@@ -124,7 +127,7 @@ let rover = null, gateMesh = null, trackLine = null;
 const interceptMarker = new THREE.Mesh(new THREE.OctahedronGeometry(0.35), new THREE.MeshBasicMaterial({ color: "#facc15", wireframe: true }));
 interceptMarker.visible = false;
 
-let padMesh = null, fogMesh = null;
+let padMesh = null, fogMesh = null, probMesh = null;
 // --- mapa que construye el dron (fase 2): celdas ocupadas (instancias coloreadas por altura) y niebla
 const fogCanvas = document.createElement("canvas");
 const fogTex = new THREE.CanvasTexture(fogCanvas);
@@ -183,7 +186,10 @@ function applyView() {
   voxMesh.visible = hasMap && v !== "world";
   voxMesh.material.opacity = v === "map" ? 0.95 : 0.55;
   if (fogMesh) fogMesh.visible = hasMap && v !== "world";
+  if (probMesh) probMesh.visible = !!searchData && v !== "world";
+  searchGroup.visible = !!searchData;
   document.querySelectorAll(".legend .map-only").forEach((e) => e.classList.toggle("hidden", !hasMap));
+  document.querySelectorAll(".legend .search-only").forEach((e) => e.classList.toggle("hidden", !searchData));
 }
 
 function buildWorld(w) {
@@ -223,6 +229,11 @@ function buildWorld(w) {
   fogMesh.renderOrder = 1;
   fogMesh.visible = false;
   worldGroup.add(fogMesh);
+  probMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: probTex, transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4, side: THREE.DoubleSide }));
+  probMesh.renderOrder = 2;
+  probMesh.visible = false;
+  worldGroup.add(probMesh);
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(L, H, W)),
     new THREE.LineBasicMaterial({ color: "#3d5a6b", transparent: true, opacity: 0.25 }));
   edges.position.set(L / 2, H / 2, -W / 2);
@@ -259,6 +270,7 @@ function buildWorld(w) {
   padMesh.position.copy(V([w.goal[0], w.goal[1], w.goal[2] - 0.05]));
   const glow = new THREE.PointLight("#facc15", 15, 8);
   glow.position.copy(V([w.goal[0], w.goal[1], w.goal[2] + 1.5]));
+  if (w.search && w.search !== "no") padMesh.userData.real = glow.userData.real = true;
   worldGroup.add(start, padMesh, glow);
   // puerta de meta en modo carrera (o marcador del punto en el aire)
   const race = frame ? frame.mode === "carrera" : false;
@@ -274,6 +286,7 @@ function buildWorld(w) {
       new THREE.MeshBasicMaterial({ color: "#facc15", transparent: true, opacity: 0.9 }));
     gate.position.copy(V([w.goal[0], w.goal[1], w.goal[2] + (w.goal_support ? 1.0 : 0)]));
     gate.userData.spin = true;
+    if (w.search && w.search !== "no") gate.userData.real = true;
     worldGroup.add(gate);
     gateMesh = gate;
     if (!w.goal_support) {  // mástil hasta el suelo para ver dónde está
@@ -377,6 +390,131 @@ function drawRays(center) {
     C.set([...c, ...c], i * 6);
   });
   rayGeo.attributes.position.needsUpdate = rayGeo.attributes.color.needsUpdate = true;
+}
+
+// --- búsqueda (fase 3): probabilidad, zona, cono de la cámara y detecciones
+const probCanvas = document.createElement("canvas");
+const probTex = new THREE.CanvasTexture(probCanvas);
+probTex.flipY = false;
+let searchData = null;
+const searchGroup = new THREE.Group();
+scene.add(searchGroup);
+const CONE_N = 16;
+const coneGeo = new THREE.BufferGeometry();
+coneGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(CONE_N * 4 * 3), 3));
+const coneLines = new THREE.LineSegments(coneGeo, new THREE.LineBasicMaterial({ color: "#f472b6", transparent: true, opacity: 0.55 }));
+coneLines.frustumCulled = false;
+coneLines.visible = false;
+scene.add(coneLines);
+function probColor(f) {  // morado translúcido (poco probable) -> rosa -> ámbar (muy probable)
+  const stops = [[0, [76, 29, 149, 40]], [0.4, [190, 24, 93, 120]], [0.75, [219, 39, 119, 170]], [1, [251, 191, 36, 210]]];
+  for (let k = 1; k < stops.length; k++) if (f <= stops[k][0]) {
+    const [f0, c0] = stops[k - 1], [f1, c1] = stops[k], t = (f - f0) / (f1 - f0);
+    return c0.map((c, j) => c + (c1[j] - c) * t);
+  }
+  return stops[stops.length - 1][1];
+}
+function drawSearch(s) {
+  searchData = s;
+  const [L, W] = world.size, sc = 2;  // 2 píxeles por metro
+  if (probCanvas.width !== L * sc) { probCanvas.width = L * sc; probCanvas.height = W * sc; }
+  const g = probCanvas.getContext("2d");
+  g.clearRect(0, 0, probCanvas.width, probCanvas.height);
+  const [x0, x1, y0, y1] = s.area, [nx, ny] = s.shape, dx = (x1 - x0) / nx, dy = (y1 - y0) / ny;
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+    const c = probColor(s.p[i * ny + j] / 999);
+    g.fillStyle = `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${(c[3] / 255).toFixed(3)})`;
+    g.fillRect((x0 + i * dx) * sc, (y0 + j * dy) * sc, dx * sc + 0.5, dy * sc + 0.5);
+  }
+  probTex.needsUpdate = true;
+  searchGroup.clear();
+  // contorno de la zona, pegado al terreno
+  const pts = [];
+  const edge = (ax, ay, bx, by) => { const n = Math.ceil(Math.hypot(bx - ax, by - ay)); for (let k = 0; k < n; k++) { const x = ax + (bx - ax) * k / n, y = ay + (by - ay) * k / n; pts.push(V([x, y, terrainH(x, y) + 0.25])); } };
+  edge(x0, y0, x1, y0); edge(x1, y0, x1, y1); edge(x1, y1, x0, y1); edge(x0, y1, x0, y0);
+  pts.push(pts[0].clone());
+  searchGroup.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+    new THREE.LineDashedMaterial({ color: "#f472b6", dashSize: 1.2, gapSize: 0.6 })).computeLineDistances());
+  for (const d of s.detections) {
+    const color = d.state === "confirmada" ? "#22c55e" : d.state === "falsa" ? "#64748b" : "#f59e0b";
+    const pin = new THREE.Mesh(new THREE.ConeGeometry(0.35, 1.2, 12), new THREE.MeshBasicMaterial({ color }));
+    pin.rotation.x = Math.PI;
+    pin.position.copy(V([d.pos[0], d.pos[1], d.pos[2] + 0.9]));
+    searchGroup.add(pin);
+  }
+  if (s.goal) {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.6, 0.8, 24), new THREE.MeshBasicMaterial({ color: "#f472b6", side: THREE.DoubleSide, transparent: true, opacity: 0.8 }));
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.copy(V(s.goal));
+    searchGroup.add(ring);
+  }
+  applyView();
+}
+function clearSearch() {
+  searchData = null;
+  searchGroup.clear();
+  coneLines.visible = false;
+  if (probMesh) probMesh.visible = false;
+}
+function drawCone(p, yaw) {  // cono de 82° de la cámara de detección, 60° bajo el horizonte, hasta el suelo
+  const d2r = Math.PI / 180, half = 41.05 * d2r, pitch = 60 * d2r;
+  const a = [Math.cos(yaw) * Math.cos(pitch), Math.sin(yaw) * Math.cos(pitch), -Math.sin(pitch)];
+  const u = [-Math.sin(yaw), Math.cos(yaw), 0];                        // a lo ancho
+  const v = [a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0]];
+  const s = [p.x, -p.z, p.y], arr = coneGeo.attributes.position.array, ground = [];
+  for (let k = 0; k < CONE_N; k++) {
+    const ph = (2 * Math.PI * k) / CONE_N, c = Math.cos(half), sn = Math.sin(half);
+    const d = [0, 1, 2].map((i) => c * a[i] + sn * (Math.cos(ph) * u[i] + Math.sin(ph) * v[i]));
+    let t = 30;
+    for (let q = 0.5; q < 30; q += 0.5) {
+      const x = s[0] + d[0] * q, y = s[1] + d[1] * q, z = s[2] + d[2] * q;
+      if (z < terrainH(x, y)) { t = q; break; }
+    }
+    ground.push(V([s[0] + d[0] * t, s[1] + d[1] * t, s[2] + d[2] * t]));
+  }
+  for (let k = 0; k < CONE_N; k++) {
+    const g0 = ground[k], g1 = ground[(k + 1) % CONE_N];
+    arr.set([p.x, p.y, p.z, g0.x, g0.y, g0.z, g0.x, g0.y, g0.z, g1.x, g1.y, g1.z], k * 12);
+  }
+  coneGeo.attributes.position.needsUpdate = true;
+}
+
+// --- enjambre (fase 5): los demás drones
+const SWARM_COLORS = ["#19a7a0", "#f97316", "#a78bfa", "#facc15"];
+const mates = [];   // {mesh, target: Vector3, q: Quaternion}
+function makeMate(color, radius) {
+  const g = new THREE.Group(), s = radius / 0.18 * 0.9;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.2 * s, 0.07 * s, 0.14 * s), new THREE.MeshStandardMaterial({ color: "#e6edf2", metalness: 0.4, roughness: 0.4 }));
+  body.castShadow = true;
+  g.add(body);
+  for (const [sx, sz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    const rotor = new THREE.Mesh(new THREE.CylinderGeometry(0.075 * s, 0.075 * s, 0.006 * s, 16),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55 }));
+    rotor.position.set(sx * 0.15 * s, 0.035 * s, sz * 0.15 * s);
+    g.add(rotor);
+  }
+  const halo = new THREE.Mesh(new THREE.RingGeometry(radius * 2.5, radius * 3.2, 32),   // visible desde la vista cenital
+    new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }));
+  halo.rotation.x = -Math.PI / 2;
+  g.add(halo);
+  scene.add(g);
+  return { mesh: g, target: new THREE.Vector3(), q: new THREE.Quaternion(), init: false };
+}
+function clearMates() {
+  mates.forEach((m) => scene.remove(m.mesh));
+  mates.length = 0;
+}
+function applySwarm(list) {
+  const others = list.filter((d) => d.id !== 0);
+  while (mates.length < others.length) mates.push(makeMate(SWARM_COLORS[(mates.length + 1) % 4], profile ? profile.radius : 0.3));
+  others.forEach((d, i) => {
+    const m = mates[i];
+    m.target.copy(V(d.pos));
+    const ex = V(d.x_body), ey = V(d.z_body), ez = new THREE.Vector3().crossVectors(ex, ey).normalize();
+    ex.crossVectors(ey, ez).normalize();
+    m.q.setFromRotationMatrix(new THREE.Matrix4().makeBasis(ex, ey, ez));
+    if (!m.init) { m.mesh.position.copy(m.target); m.init = true; }
+  });
 }
 
 // ecos de la cámara de profundidad (lo que ve ahora mismo)
@@ -544,6 +682,8 @@ function animate() {
       padMesh.position.set(g.x, g.y - 0.05, g.z);
     }
     shadowDot.position.set(s.p.x, terrainH(s.p.x, -s.p.z) + 0.03, s.p.z);
+    coneLines.visible = !!(searchData && frame && (frame.phase === "búsqueda" || frame.phase === "confirmación"));
+    if (coneLines.visible) drawCone(s.p, frame.yaw);
     drawRays(s.p);
     const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(s.q);
     let dy = Math.atan2(-fwd.z, fwd.x) - camYaw;
@@ -551,6 +691,7 @@ function animate() {
     camYaw += dy * (1 - Math.exp(-dt * 2.0));
   }
   (drone.userData.rotors || []).forEach((r, i) => { r.rotation.y += (i % 2 ? 1 : -1) * dt * 60; });
+  mates.forEach((m) => { m.mesh.position.lerp(m.target, 1 - Math.exp(-dt * 10)); m.mesh.quaternion.slerp(m.q, 1 - Math.exp(-dt * 10)); });
   updateWind(dt * simRate, drone.position);
   updateRain(dt * simRate, drone.position);
   worldGroup.children.forEach((c) => { if (c.userData.spin) c.rotation.y += dt * 0.8; });
@@ -633,6 +774,13 @@ function drawPanel(f) {
   $("k-explored").textContent = unknown ? fmt(100 * f.explored, 0, " %") : "—";
   $("k-mapreplan").textContent = unknown ? f.map_replans : "—";
   $("k-dist").textContent = fmt(f.distance, 0, " m");
+  const sd = searchData;
+  const chase = f.lost != null;   // fase 4: la búsqueda es la de un vehículo perdido, no la de la meta
+  $("k-search").textContent = sd ? (chase ? "tras perderlo (bayesiana)" : LABELS.search[sd.strategy].replace("Buscarla: ", "")) : "no (la conoce)";
+  $("k-covered").textContent = sd && !chase ? fmt(100 * sd.covered, 0, " %") : "—";
+  $("k-found").textContent = sd && !chase ? (f.found_t != null ? f.found_t.toFixed(1) + " s" : "buscando…") : "—";
+  $("k-false").textContent = sd ? sd.detections.filter((d) => d.state === "falsa").length : "—";
+  $("k-swarm").textContent = f.swarm ? `${f.swarm.length} drones` + (f.found_t != null ? ` · la encontró el ${f.lead + 1}` : "") : "—";
   $("k-speed").textContent = `${f.speed.toFixed(1)} / ${f.ref_speed.toFixed(1)} m/s`;
   $("k-vz").textContent = fmt(f.vz, 1, " m/s");
   $("k-acc").textContent = fmt(Math.hypot(...f.acc), 1, " m/s²");
@@ -645,6 +793,7 @@ function drawPanel(f) {
   const gn = f.goal_now || f.pad;
   $("k-tdist").textContent = fmt(Math.hypot(f.pos[0] - gn[0], f.pos[1] - gn[1]), 1, " m");
   $("k-tvel").textContent = f.moving ? fmt(Math.hypot(...f.target_vel), 1, " m/s") : "quieto";
+  $("k-lost").textContent = f.lost == null ? "—" : `${f.lost} · ${f.seen_ago < 0.5 ? "a la vista" : "sin verlo " + f.seen_ago.toFixed(0) + " s"}`;
   drawCompass(f);
   const vmax = profile ? profile.v_cruise * 1.3 : 10;
   lineChart("chart-speed", [{ key: "ref", color: "#93a1ad", dash: [4, 3] }, { key: "speed", color: "#19a7a0", width: 2.2 }],
@@ -705,6 +854,7 @@ function showProfile(p) {
 const pending = [];
 let lastT = -1, streamEnded = false;
 function ingest(f) {
+  if (!replay) recorded.push(f);
   pushPose(f, false);
   pending.push(f);
   lastT = f.t;
@@ -718,6 +868,8 @@ function applyFrame(f) {
   depthPts.visible = els.rays.checked && f.map_mode === "desconocido";
   if (f.depth_pts) drawDepth(f.depth_pts);
   if (f.map) drawMap(f.map);
+  if (f.search) drawSearch(f.search);
+  if (f.swarm) applySwarm(f.swarm);
   const showGps = els.gps.checked;
   estMarker.visible = gpsPts.visible = showGps;
   if (f.gps && (!lastGps || f.gps.join() !== lastGps)) {
@@ -750,34 +902,65 @@ function config() {
     wind_speed: Number(els.wind.value), wind_dir: Number(els.wdir.value), gusts: Number(els.gusts.value),
     noise: els.noise.value, precision_landing: els.precision.checked, collision_prevention: els.cp.checked,
     mode: els.mode.value, terrain: els.terrain.value, density: els.density.value, goal_kind: els.goalKind.value,
-    rain: els.rain.value, motion: els.motion.value, map_mode: els.mapMode.value };
+    rain: els.rain.value, motion: els.motion.value, map_mode: els.mapMode.value, search: els.search.value,
+    drones: Number(els.drones.value) };
+}
+// --- repeticiones (fase 6): cada vuelo se graba entero en el navegador; se puede repetir, guardar y abrir
+let recorded = [], replay = null;
+function loadFlight(f) {   // prepara la escena con el primer fotograma (completo) de un vuelo
+  showProfile(f.profile);
+  frame = f;
+  windField = f.wind_field;
+  windCfg = { speed: f.config.wind_speed, dir: f.config.wind_dir };
+  world = f.world;
+  world.rain = f.config.rain;
+  world.search = f.config.search;
+  clearSearch();
+  clearMates();
+  buildWorld(f.world);
+  world.rain = f.config.rain;
+  clearMap();
+  depthGeo.setDrawRange(0, 0);
+  telemetry.length = 0; gpsList.length = 0; lastGps = null;
+  gpsGeo.setDrawRange(0, 0);
+  pending.length = 0; lastT = f.t; streamEnded = false;
+  pushPose(f, true);
+  applyFrame(f);
+  const dp = V(f.pos);
+  camYaw = f.yaw;
+  camera.position.copy(dp.clone().add(new THREE.Vector3(-Math.cos(camYaw) * 6, 3, Math.sin(camYaw) * 6)));
+  controls.target.copy(dp);
 }
 async function newFlight() {
   setPlaying(false);
+  replay = null;
   try {
     const f = await api("/api/reset", config());
-    showProfile(f.profile);
-    frame = f;
-    windField = f.wind_field;
-    windCfg = { speed: f.config.wind_speed, dir: f.config.wind_dir };
-    world = f.world;
-    world.rain = f.config.rain;
-    buildWorld(f.world);
-    world.rain = f.config.rain;
-    clearMap();
-    depthGeo.setDrawRange(0, 0);
-    telemetry.length = 0; gpsList.length = 0; lastGps = null;
-    gpsGeo.setDrawRange(0, 0);
-    pending.length = 0; lastT = f.t; streamEnded = false;
-    pushPose(f, true);
-    applyFrame(f);
-    const dp = V(f.pos);
-    camYaw = f.yaw;
-    camera.position.copy(dp.clone().add(new THREE.Vector3(-Math.cos(camYaw) * 6, 3, Math.sin(camYaw) * 6)));
-    controls.target.copy(dp);
+    loadFlight(f);
+    recorded = [f];
   } catch (e) { toast(e.message); }
 }
+function startReplay(frames) {
+  if (!frames.length || !frames[0].world) { toast("No hay vuelo que repetir"); return; }
+  setPlaying(false);
+  loadFlight(frames[0]);
+  replay = { frames, i: 1 };
+  setPlaying(true);
+}
+function saveFlight() {
+  if (recorded.length < 2) { toast("Vuela primero: no hay nada que guardar"); return; }
+  const c = recorded[0].config || {};
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify({ version: 1, frames: recorded })], { type: "application/json" }));
+  a.download = `vuelo-${c.profile || "dron"}-semilla${c.seed}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
 async function tick() {  // recoge los fotogramas que el servidor ya ha simulado por delante
+  if (replay) {   // repetición: los fotogramas salen de la grabación, al ritmo del reloj de reproducción
+    while (replay.i < replay.frames.length && replay.frames[replay.i].t <= playClock + 1.0) ingest(replay.frames[replay.i++]);
+    return replay.i < replay.frames.length || !streamEnded;
+  }
   if (busy || !frame || streamEnded) return !streamEnded;
   busy = true;
   try {
@@ -798,9 +981,17 @@ async function loop() {
   }
 }
 els.newBtn.onclick = newFlight;
+$("btn-replay").onclick = () => startReplay(replay ? replay.frames : recorded.slice());
+$("btn-save").onclick = saveFlight;
+$("file-open").onchange = async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  try { startReplay(JSON.parse(await file.text()).frames || []); } catch (err) { toast("Archivo no válido: " + err.message); }
+  e.target.value = "";
+};
 els.play.onclick = () => setPlaying(!playing);
 for (const el of [els.profile, els.level, els.gusts, els.noise, els.precision, els.cp, els.mode, els.terrain,
-  els.density, els.goalKind, els.rain, els.motion, els.mapMode]) el.onchange = newFlight;
+  els.density, els.goalKind, els.rain, els.motion, els.mapMode, els.search, els.drones]) el.onchange = newFlight;
 els.view.onchange = applyView;
 els.wind.oninput = () => { $("wind-v").textContent = `${els.wind.value} m/s`; };
 els.wdir.oninput = () => { $("wdir-v").textContent = `${els.wdir.value}°`; };
@@ -835,6 +1026,8 @@ document.addEventListener("keydown", (e) => {
   fill(els.rain, options.rain, LABELS.rain);
   fill(els.motion, options.motions, LABELS.motion);
   fill(els.mapMode, options.map_modes, LABELS.map);
+  fill(els.search, options.searches, LABELS.search);
+  els.search.value = "no";
   els.mapMode.value = "desconocido";
   els.profile.value = "mini"; els.level.value = "mixto"; els.noise.value = "realista";
   els.terrain.value = "colinas"; els.density.value = "normal"; els.goalKind.value = "suelo"; els.rain.value = "no";

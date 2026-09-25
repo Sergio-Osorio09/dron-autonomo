@@ -9,7 +9,12 @@ rápido posible.
 **Fase 2:** el dron puede volar **sin conocer el mundo**. Con sus telémetros y una cámara de profundidad construye
 un mapa de ocupación 3D mientras vuela, planifica sobre él y replanifica cada vez que descubre un obstáculo.
 
+**Fases 3 a 6:** puede **buscar** una meta de la que solo sabe la zona (barrido, fronteras o búsqueda bayesiana),
+**perseguir un vehículo que huye** y se esconde tras los edificios, **repartirse la búsqueda entre 2-4 drones**, y
+cada vuelo se puede **repetir, guardar y abrir**. Un banco de pruebas mide todo con intervalos de confianza.
+
 > Arquitectura, fuentes de los datos, lecciones aprendidas y plan de fases: **[docs/CONTEXTO.md](docs/CONTEXTO.md)**
+> Piezas para construir un dron real con esta autonomía (~1000-1100 $): **[docs/HARDWARE.md](docs/HARDWARE.md)**
 
 ## Opciones de cada vuelo
 
@@ -21,7 +26,9 @@ un mapa de ocupación 3D mientras vuela, planifica sobre él y replanifica cada 
 | Nivel y densidad | bosque / ciudad / mixto · densidad baja, normal, alta o extrema |
 | Terreno | plano · colinas · montañoso · precipicios (mesetas con acantilados) |
 | Meta | en el suelo · en una azotea · en una cima · en el aire (carrera) · al azar |
-| Objetivo (carrera) | quieto · en movimiento sobre un vehículo: suave (~1 m/s), medio (~2,5 m/s), rápido (~5 m/s) o variable (acelera, frena, se para y gira sin avisar) |
+| Objetivo (carrera) | quieto · en movimiento sobre un vehículo: suave (~1 m/s), medio (~2,5 m/s), rápido (~5 m/s), variable (acelera, frena, se para y gira sin avisar) o **huye y se esconde** (fase 4: sin rastreador, solo lo ve la cámara) |
+| Búsqueda | no (sabe dónde está la meta) · buscarla con **barrido** (cortacésped), **fronteras** (FUEL) o **bayesiana** (fase 3) |
+| Drones | 1 a 4: se reparten la búsqueda o persiguen en equipo al vehículo que huye (fase 5) |
 | Clima | viento 0-14 m/s y dirección · ráfagas (ninguna a fuertes) · lluvia (no, moderada, fuerte) |
 | Sensores | ideales · realistas · ruido alto; aterrizaje de precisión y Collision Prevention activables |
 
@@ -45,6 +52,17 @@ un mapa de ocupación 3D mientras vuela, planifica sobre él y replanifica cada 
   posición *estimada*. Sobre él se calcula el **campo de distancias (ESDF)**. Lo desconocido se trata como libre
   para planificar; cada vez que el mapa cambia, el dron comprueba su trayectoria y **replanifica sin frenar** si ya
   no está libre.
+- **Búsqueda (fase 3):** una cámara de detección (82°, inclinada 60°) ve la plataforma según su tamaño en la
+  imagen, si nada la tapa, y a veces se equivoca (falsas alarmas). El dron mantiene un **mapa de probabilidad** que
+  actualiza con la regla de Bayes, elige adónde ir con tres estrategias y **confirma** cada detección de cerca.
+- **Objetivo que huye (fase 4):** al ver al dron, el vehículo escapa y se esconde tras obstáculos. El dron lo sigue
+  con la cámara en un gimbal y, si lo pierde, lo busca **desde la última posición vista** con una creencia que se
+  difunde a la velocidad del vehículo.
+- **Enjambre (fase 5):** 2-4 drones completos comparten la creencia; cada uno busca en su **celda de Voronoi**, nunca
+  donde va otro, en su capa de altura, y se evitan entre sí. Quien encuentra la meta aterriza. Contra el vehículo
+  que huye, **persiguen en equipo**: comparten cada avistamiento y le cierran las salidas por los lados.
+- **Banco de pruebas y repeticiones (fase 6):** evaluaciones en paralelo, `eval/bench.py` con intervalos de
+  confianza de Wilson, y grabación de cada vuelo en el navegador (repetir, guardar en JSON y abrir).
 - **Filtro de Kalman** (como el EKF2 de PX4) con puertas de innovación. El dron vuela con lo que *cree*, no con la
   posición real.
 - **Planificación:** A\* sobre un campo de distancias, estirado de cuerda, suavizado y **perfil de velocidad
@@ -66,6 +84,9 @@ un mapa de ocupación 3D mientras vuela, planifica sobre él y replanifica cada 
   telémetros.
 - **El mapa del dron:** celdas ocupadas coloreadas por altura, niebla sobre lo que aún no ha explorado y los ecos de
   la cámara de profundidad. El selector *Vista* muestra el mundo real, solo lo que sabe el dron o los dos.
+- **La búsqueda:** mapa de calor de la probabilidad sobre el terreno (ámbar = aún probable), la zona, el cono de la
+  cámara y las detecciones (naranja pendiente, verde confirmada, gris falsa alarma). Los demás drones del enjambre.
+- Botones **⟲ Repetir**, **⭳ Guardar** y **⭱ Abrir** para volver a ver un vuelo sin simularlo otra vez.
 - HUD con fase, velocidad, altura, inclinación, viento y batería, más una brújula con el viento y el rumbo.
 - Gráficas de **velocidad real frente a planificada** y de **error de estimación frente a viento**.
 - Ficha del dron con sus datos reales y resultados de la sesión.
@@ -80,16 +101,21 @@ ejemplo, entrenando un modelo), la calidad gráfica baja sola para mantener la f
 
 ## Resultados
 
-Tabla completa (3 drones × 16 escenarios × mapa conocido y desconocido, mismos mundos para todos) en
-[eval/resultados.md](eval/resultados.md):
+Tablas completas (mismos mundos para todos) en [eval/resultados.md](eval/resultados.md) (3 drones × 17 escenarios
+× mapa conocido y desconocido), [eval/resultados_busqueda.md](eval/resultados_busqueda.md) y
+[eval/resultados_enjambre.md](eval/resultados_enjambre.md):
 
-- **Sin conocer el mundo, 46 de 48 combinaciones al 100 %** (igual que con el mapa conocido): los tres drones en
-  calma y con viento, montaña con meta en la cima, azotea, precipicios, bosque extremo, lluvia fuerte, carreras y
-  **objetivo en movimiento**.
-- **Coste de construir el mapa:** +2 % de tiempo (22,4 s frente a 22,0 s de media). Cada replanificación tarda ~15 ms.
-- **Límites reales:** el PX4 genérico, con viento de 10 m/s (su límite), aterriza a ~1 m de la plataforma con ráfagas
-  moderadas y choca 2 de 3 veces con ráfagas fuertes.
-- **Precisión:** aterriza a 3-36 cm del centro. Error del filtro: ~1,2 m con el GPS del Mini, ~0,7 m con PX4 y
+- **48 de 51 combinaciones al 100 % en los dos modos de mapa**: los tres drones en calma y con viento, montaña con
+  meta en la cima, azotea, precipicios, bosque extremo, lluvia fuerte, carreras, **objetivo en movimiento** y
+  **objetivo que huye**. Construir el mapa cuesta un +5 % de tiempo.
+- **Búsqueda:** 53 de 54 casillas al 100 %. Con 60 semillas las tres estrategias tardan lo mismo de media (~24 s);
+  la bayesiana es la más regular (en el peor 10 % de los casos, 31 s frente a 40 s del barrido). Con **2 drones**,
+  el barrido baja de 30 a 17 s.
+- **Objetivo que huye:** con un dron lo captura el 83 % de las veces (30 semillas) y tarda ~1,5 min; **en equipo,
+  97 % con 2 o 3 drones y en ~50 s** ([eval/resultados_persecucion.md](eval/resultados_persecucion.md)).
+- **Límites reales:** el PX4 genérico, con viento de 10 m/s (su límite), aterriza fuera de la plataforma o choca con
+  ráfagas fuertes.
+- **Precisión:** aterriza a 3-32 cm del centro. Error del filtro: ~1,2 m con el GPS del Mini, ~0,7 m con PX4 y
   ~0,2 m con RTK.
 
 ## Uso
@@ -97,8 +123,10 @@ Tabla completa (3 drones × 16 escenarios × mapa conocido y desconocido, mismos
 ```bash
 pip install -r requirements.txt
 python server.py            # http://127.0.0.1:7873
-python -m pytest -q         # 23 tests
-python eval/eval_headless.py --flights 2 --md eval/resultados.md
+python -m pytest -q         # 35 tests
+python eval/eval_headless.py --flights 1 --jobs 10 --md eval/resultados.md     # fases 1, 2 y 4
+python eval/eval_search.py --jobs 10 --md eval/resultados_busqueda.md          # fase 3
+python eval/bench.py --n 30 profile=px4 search=bayesiana                       # banco de pruebas
 ```
 
 ## Estructura
@@ -107,14 +135,15 @@ python eval/eval_headless.py --flights 2 --md eval/resultados.md
 dron-autonomo/
 ├── CLAUDE.md, docs/CONTEXTO.md     guía para agentes y contexto completo
 ├── dron/                           params, world (terreno), target (objetivo móvil), dynamics, wind, sensors, estimator,
-│                                   mapping (mapa que construye el dron), planning, control, mission, sim
-├── eval/                           eval_headless.py y resultados
-├── tests/                          física, viento, filtro, planificación, mapa y misión completa
+│                                   mapping (mapa que construye el dron), search (búsqueda), planning, control,
+│                                   mission, sim, swarm (enjambre)
+├── eval/                           eval_headless.py, eval_search.py, bench.py y resultados
+├── tests/                          física, viento, filtro, planificación, mapa, búsqueda, evasión, enjambre y misión
 ├── server.py                       servidor local (puerto 7873)
 └── ui/                             index.html, style.css, app.js (three.js)
 ```
 
-## Próximas fases
+## Fases
 
-2 (hecha salvo las trayectorias B-spline) · 3 misión de búsqueda con niebla de guerra y mapa de probabilidad ·
-4 objetivo que huye · 5 varios drones · 6 banco de pruebas y puente a PX4 SITL. Detalle en `docs/CONTEXTO.md`.
+Las fases 1 a 6 están hechas. Queda pendiente: trayectorias B-spline (fase 2) y el puente a PX4 SITL + Gazebo
+(fase 6). Detalle y siguientes pasos en `docs/CONTEXTO.md`.

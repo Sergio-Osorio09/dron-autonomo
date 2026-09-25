@@ -21,7 +21,9 @@ sensores con ruido → estimación (Kalman) → [mapa] → misión → planifica
 | Estimación | `dron/estimator.py` | Filtro de Kalman de 9 estados con puertas de innovación | EKF2 de PX4 |
 | Planificación | `dron/planning.py` | Campo de distancias + **A\*** + estirado de cuerda + Chaikin + perfil de velocidad óptimo en tiempo; funciona igual con el mundo conocido o con el mapa aprendido | Voxblox/FIESTA (ESDF), Theta*, TOPP |
 | Control | `dron/control.py` | Cascada posición → velocidad (PID) → aceleración → inclinación y empuje; **Collision Prevention** con telémetros, cámara frontal en 72 sectores y visión inferior | `mc_pos_control` y CollisionPrevention de PX4 |
-| Objetivo móvil | `dron/target.py` | Vehículo que recorre el terreno (suave, medio, rápido, variable); **filtro de Kalman de velocidad constante** para seguirlo; **punto de intercepción** | Seguimiento de blancos y guiado con adelanto (lead pursuit) |
+| Objetivo móvil | `dron/target.py` | Vehículo que recorre el terreno (suave, medio, rápido, variable) o que **huye** del dron y se esconde (fase 4); **filtro de Kalman de velocidad constante** para seguirlo; **punto de intercepción** | Seguimiento de blancos y guiado con adelanto (lead pursuit); persecución-evasión |
+| Búsqueda | `dron/search.py` | (fase 3) Zona de búsqueda, cámara de detección con cono, oclusión y falsas alarmas; **creencia bayesiana** en rejilla; estrategias **barrido** (boustrophedon), **fronteras** (FUEL) y **bayesiana**; confirmación de detecciones. (fase 4) Creencia de un blanco móvil que se difunde. (fase 5) Reparto por **Voronoi** + subasta voraz | Teoría de búsqueda de Koopman, IAMSAR; FUEL (Zhou et al. 2021); Cortés et al. 2004 |
+| Enjambre | `dron/swarm.py` | (fase 5) 2-4 drones completos que comparten la creencia; capas de altura y evitación reactiva entre ellos | Cobertura con Voronoi, CBBA (versión voraz), reciprocidad de ORCA |
 | Misión | `dron/mission.py` | Con mapa desconocido, comprueba la trayectoria cada vez que cambia el mapa y **replanifica** sin frenar; si no hay camino, espera y reintenta. Modo **aterrizar** (despegue → crucero → aproximación → aterrizaje de precisión) o **carrera** (cruzar la meta sin frenar); velocidad limitada por el alcance de los sensores; margen según la incertidumbre del filtro | Modos Takeoff/Mission/Land e IR-LOCK de PX4 |
 | Simulación | `dron/sim.py` | Bucle a 200 Hz que une todo; `map_mode` = `conocido` (fase 1) o `desconocido` (fase 2) | — |
 
@@ -45,6 +47,10 @@ Todos están en `dron/params.py`, con fuente:
   **Estimado:** la resolución de la cámara (24 × 14 rayos, submuestreada para que Python vaya en tiempo real), el
   3 % de píxeles sin dato y que el error de la cámara crezca linealmente con la distancia (en una estéreo real
   crece con el cuadrado).
+- **Búsqueda (fases 3-5)**: cámara de detección con el campo de visión del DJI Mini 3 (82,1°, ficha técnica),
+  inclinada 60° hacia abajo; detector con entrada de 640 px (la estándar de YOLO). **Estimado:** la curva de
+  detección (32 px fiable, 12 px nada, 0,9 como máximo), el 1 % de falsas alarmas por imagen, la altura de búsqueda
+  (8 m), el vehículo que huye (5 m/s, 3 m/s², alerta a 30 m) y la separación entre capas del enjambre (2 m).
 - El **arrastre** no se inventa: a velocidad máxima con la inclinación máxima, el empuje horizontal iguala al
   arrastre, así que `k = g·tan(inclinación) / v_max²`. Un test comprueba que cada perfil alcanza su v_max real.
 
@@ -131,15 +137,107 @@ Todos están en `dron/params.py`, con fuente:
    0,3 m) para no estorbar a la puerta de meta. Solo actúa en crucero, carrera y persecución; no en el
    aterrizaje. Resultado: 46 de 48 combinaciones al 100 % en los dos modos de mapa.
 
+## 3c. Lecciones de la fase 3 (búsqueda)
+
+1. **Un punto de búsqueda pegado a un edificio que aún no conocía** dejaba al dron 16 s reintentando un camino
+   imposible. Ahora, si no se puede llegar a un punto, se descarta (él y la zona que se quería mirar) y la estrategia
+   elige otro.
+2. **Dos falsas alarmas en el mismo sitio confirmaban una meta falsa** (aterrizaba a 41 m de la buena). Al mirar
+   fijamente una zona para confirmar, las falsas alarmas caen justo ahí. Ahora hacen falta 3 detecciones a menos
+   de 1,5 m de su mediana (con la plataforma real, de cerca, casi seguro; con falsas alarmas, ~10⁻⁵).
+3. **Las fases nuevas no tenían las protecciones de vuelo.** La altura mínima sobre la superficie y la visión
+   (frontal en sectores e inferior) solo se aplicaban en crucero y carrera: bajando a confirmar, un Mini cayó sobre
+   la copa de un árbol. Ahora hay una lista única de fases de vuelo (`FLIGHT_PHASES`), y la visión inferior mira
+   también hacia donde va el dron (0,6 s por delante), y la franja de los sectores se amplía hacia abajo al bajar.
+4. **Idea descartada tras medirla: comprobar una detección sin desviarse.** Parecía que ahorraría los desvíos por
+   falsas alarmas, pero mientras tanto se ignoraban las demás detecciones (también la de la plataforma de verdad):
+   la búsqueda bayesiana pasó de 31 a 40 s de media y perdió 2 de 18 casillas. Se volvió a confirmar en el acto.
+
+## 3d. Lecciones de las fases 4, 5 y 6
+
+1. **(4) Perdido nada más despegar.** El dron no ve el vehículo a 40 m y lo daba por perdido a los 2,5 s. Ahora
+   solo está "perdido" si está a menos de 25 m de donde lo predice y no lo ve; si no, sigue volando hacia allí.
+2. **(4) Un recuadro de búsqueda alrededor de donde se perdió no sirve para un blanco rápido**: a 5 m/s sale de él
+   en segundos y no se le volvía a encontrar nunca (300 s agotados). La creencia de un blanco móvil cubre toda la
+   arena y se difunde a su velocidad máxima; solo se calcula la oclusión de lo que cae en el cono de la cámara.
+3. **(4) Buscar a quien huye es una persecución.** Se buscaba a la velocidad de crucero: la del PX4 (5 m/s) es la
+   del vehículo, así que nunca le recortaba distancia. Ahora busca a velocidad de carrera y 7 m más alto (se ve
+   más terreno y tapan menos los obstáculos).
+4. **(4) Chocar contra el borde persiguiendo un punto fuera de la arena.** El filtro de Kalman extrapolaba al
+   vehículo más allá del borde; el dron iba a por él y rozaba la geovalla (4 choques en 30 vuelos). Ahora ninguna
+   meta de planificación ni de persecución puede quedar fuera de la arena.
+5. **(4) Perseguir un fantasma.** Sin verlo, el filtro lo seguía moviendo en línea recta para siempre: el dron lo
+   perseguía sin llegar nunca a estar lo bastante cerca como para darlo por perdido y buscarlo. Al que huye no se
+   le extrapola más de 1,5 s desde la última vez que se le vio. Banco de pruebas (PX4, mixto, 30 semillas): del
+   70 % al 80 % de capturas y sin choques.
+6. **(4) Ideas descartadas tras medirlas con 30 semillas:** interceptar desde 6 m más arriba (73 % frente a 70 %,
+   y la mediana de tiempo empeora de 87 a 118 s), desplazar la creencia inicial en dirección contraria al dron
+   (73 %) e ir primero a la última posición conocida antes de la búsqueda bayesiana (77 % frente a 83 %: la creencia
+   ya empieza centrada allí y el vehículo ya se ha ido). Ninguna diferencia es significativa (los intervalos del 95 % se solapan casi por completo).
+7. **(5) Estado por dron dentro de lo compartido.** Las franjas del barrido estaban en la creencia compartida: un
+   dron se comía las del otro. Lo que es de cada dron (franjas, candidato que confirma) va con su identificador.
+8. **(6) Las evaluaciones tardaban 20-25 min** en serie; con `--jobs` (procesos en paralelo, mismos resultados)
+   tardan ~5 min con 10 procesos.
+9. **Collision Prevention empujaba hacia la pared** (fallo de la fase 1 que salió al perseguir con el Matrice). El
+   margen por tiempo de reacción crecía con la velocidad en TODAS las direcciones: un edificio que el dron acababa
+   de dejar atrás contaba como "demasiado cerca" y el "aléjate" lo lanzaba contra el borde de enfrente. Ahora el
+   margen usa solo la velocidad HACIA cada obstáculo, y una segunda pasada vuelve a aplicar todos los límites (sin
+   empujones): ningún "aléjate" puede meterlo en otro obstáculo.
+10. **Pedir menos velocidad no es frenar.** Si ya iba demasiado rápido hacia algo, Collision Prevention solo bajaba
+    la velocidad pedida y el PID de velocidad (ganancia 1,8) frenaba flojo: llegaba tarde. Ahora añade la
+    deceleración necesaria para parar en el espacio que queda (hasta la aceleración máxima). Con 9 y 10: de 46-48 a
+    **49 de 51 casillas al 100 % en los dos modos**, y el objetivo que huye pasa a 100 % en todas sus casillas.
+11. **Idea descartada tras medirla: planificar con el límite de Collision Prevention** (`control.cp_speed_limit`).
+    Bajan un poco las replanificaciones (5,9 → 5,1) pero sube el tiempo 1-2 s y no mejora el éxito.
+12. **(4 + 5) Un perseguidor no basta; varios, sí.** Con avistamiento compartido y cerco (los demás se abren 6 m a
+    los lados), las capturas del vehículo que huye pasan del 80 % (1 dron) al 93 % (2) y al 100 % (3), y la mediana
+    de tiempo de 120 s a 43 s (30 semillas; con el viento corregido de la lección 15: 83 %, 97 % y 97 %,
+    `eval/resultados_persecucion.md`). Primero, con 3 drones, hubo 4 choques
+    entre drones en 30 vuelos: convergían todos en la puerta y Collision Prevention ignoraba al compañero que tenía
+    debajo (descarta los rayos hacia abajo). Ahora solo el primero baja a la puerta (los demás, +2 m por puesto) y
+    los compañeros siempre cuentan, con su propia distancia de seguridad. 0 choques.
+13. **Idea descartada tras medirla: B-splines tipo EGO-Planner** (`DRON_SMOOTHER=bspline`). La versión hecha
+    (puntos de control cada metro, gradiente de suavidad + holgura del ESDF) no mejora a Chaikin: 97 frente a 98
+    casillas al 100 %, algo más lenta y con más replanificaciones. Le faltaría lo que hace fuerte a EGO-Planner
+    (factibilidad dinámica, reparto de tiempos y replanificación local a alta frecuencia). Queda como opción.
+14. **Rendimiento**: los 40 telémetros usan ya el trazado de rayos vectorizado (mismos resultados): 4 drones con
+    mapa desconocido pasan de 1,3× a 1,7× tiempo real.
+15. **Ráfagas de 29 m/s con 6 m/s de viento medio** (lo encontró el banco de pruebas: un Matrice aterrizó a 1,2 m
+    de la plataforma en una azotea). El multiplicador de turbulencia de las estelas se sumaba (+2,5 por edificio,
+    +1,5 por el relieve) y llegaba a ×5. Ahora tiene un tope de ×2 (ESTIMADO: en una estela la intensidad de
+    turbulencia crece del orden del doble). Barrido de robustez (4 escenarios difíciles × 40 semillas, mapa
+    desconocido): 159/160 antes del arreglo, sin choques.
+16. **Barridos de robustez con el banco de pruebas** (mapa desconocido, 40 semillas por escenario): Mini en bosque
+    extremo con viento 40/40; Matrice en azotea con ráfagas moderadas 39/40 (antes del tope de turbulencia);
+    búsqueda bayesiana con lluvia 40/40; carrera contra objetivo rápido en precipicios 40/40; búsqueda con 3 drones
+    40/40; persecución en equipo (2 drones, ciudad) 39/40; con 4 drones (el máximo), búsqueda en ciudad 30/30 y
+    persecución 30/30. Ningún choque.
+
 ## 4. Resultados
 
-Ver `eval/resultados.md` (3 drones × 16 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera y
-objetivo en movimiento; cada uno con mapa conocido y desconocido).
+Ver `eval/resultados.md` (3 drones × 17 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera y
+objetivo en movimiento o que huye; cada uno con mapa conocido y desconocido).
 
-- **46 de 48 combinaciones al 100 % en los dos modos de mapa.** Solo falla el PX4 con viento de 10 m/s (su límite):
-  aterriza fuera de la plataforma con ráfagas moderadas y choca 2 de 3 veces con ráfagas fuertes y ruido alto.
-- **Coste de no conocer el mundo:** en las 46 combinaciones que los dos modos completan al 100 %, el tiempo medio pasa
-  de 22,0 s a 22,4 s (+2 %). Las carreras contra objetivos rápidos son muy variables en los dos modos (lección 3b.7).
+- **48 de 51 combinaciones al 100 % en los dos modos de mapa** (17 escenarios con el del objetivo que huye). Falla el
+  PX4 con viento de 10 m/s (su límite) y, alguna vez, una persecución del vehículo que huye (3 vuelos por casilla
+  son pocos para ese escenario: ver el banco de pruebas).
+- **Coste de no conocer el mundo:** en las 46 combinaciones de las fases 1-2 que los dos modos completan al 100 %, el
+  tiempo medio pasa de 21,3 s a 22,4 s (+5 %).
+- **Objetivo que huye (fase 4):** con 30 semillas (PX4, mixto, `eval/bench.py`): 83 % de capturas con un dron, con
+  una mediana de 103 s (lo pierde y lo vuelve a buscar varias veces).
+- **Búsqueda (fase 3, `eval/resultados_busqueda.md`):** 53 de 54 casillas al 100 % (la otra aterrizó a 0,8 m, fuera de
+  la plataforma de 0,75 m, con ráfagas). 1,3-2 falsas alarmas por vuelo, todas descartadas. En esa tabla la
+  bayesiana parece la más rápida (30 s frente a 40 y 43 s), pero son siempre los mismos 3 mundos por casilla: **con
+  60 semillas (`eval/bench.py`, PX4, mixto, colinas) las tres tardan lo mismo de media** (~24 s ± 3-6 s) y la
+  diferencia está en el peor caso: percentil 90 de 31 s la bayesiana, 33 s fronteras y 40 s el barrido. Tampoco
+  cambian nada una altura de búsqueda de 12 m ni pasadas del barrido cada 16 m (30 semillas).
+- **Persecución en equipo (fases 4 + 5, `eval/resultados_persecucion.md`, 30 semillas):** 1 dron 83 % (mediana
+  103 s), 2 drones 97 % (49 s), 3 drones 97 % (60 s), sin choques entre ellos.
+- **Enjambre (fase 5, `eval/resultados_enjambre.md`, PX4 en calma):** 100 % y ningún choque entre drones. Con 2 drones
+  el barrido encuentra la meta en 17 s (29,8 s con 1); la bayesiana apenas mejora (19 → 17 s): a partir de ~16 s
+  el tiempo es despegar, llegar a la zona y confirmar. Con 60 semillas (bayesiana, mixto): media 23,9 → 21,1 → 21,7 s
+  con 1, 2 y 3 drones; lo que sí mejora con 3 es el peor caso (percentil 90: 31 → 24 s). 0 choques en 120 vuelos.
+  En zonas de 40 × 30 m el enjambre rinde poco en búsqueda; donde marca la diferencia es persiguiendo.
 - Replanificaciones por el mapa: de media entre 0,3 y 34 por vuelo (más en persecuciones). Cada una tarda ~15 ms.
 
 ## 5. Fases del proyecto
@@ -150,20 +248,28 @@ objetivo en movimiento; cada uno con mapa conocido y desconocido).
 | **1b (hecha)** | Terreno con relieve y precipicios, densidad, viento que interactúa con obstáculos, lluvia, meta en azotea/cima/aire, modo carrera | Mapa de alturas, estelas de viento, límite de velocidad por alcance de sensores, márgenes según la covarianza |
 | **1c (hecha)** | Carrera contra un objetivo en movimiento (suave, medio, rápido, variable) | Kalman de velocidad constante, punto de intercepción, persecución predictiva con línea de visión, geovalla |
 | **2 (hecha)** | El dron construye su mapa con sensores ruidosos (ya no conoce el mundo); replanificación. Pendiente: trayectorias B-spline | Mapa de ocupación con log-odds (OctoMap), ESDF, A\* con replanificación (D\* Lite descartado, ver 3b.5); B-splines tipo **EGO-Planner** pendientes |
-| 3 | Misión de búsqueda: meta desconocida, cámara con cono y oclusión, zona designada, niebla de guerra y mapa de calor | **Búsqueda bayesiana**, exploración por fronteras (**FUEL**), cobertura boustrophedon |
-| 4 | Objetivo que HUYE del dron y se esconde tras edificios (el seguimiento de objetivos móviles ya existe desde la 1c) | Persecución-evasión, búsqueda desde la última posición vista |
-| 5 | Varios drones que se reparten la búsqueda (activable) | Subastas **CBBA** / algoritmo húngaro, **Voronoi**, **ORCA** |
-| 6 | Banco de pruebas, repeticiones y, opcionalmente, puente a PX4 SITL + Gazebo | — |
+| **3 (hecha)** | Misión de búsqueda: meta desconocida, cámara con cono y oclusión, zona designada, niebla de guerra y mapa de calor | **Búsqueda bayesiana**, exploración por fronteras (**FUEL**), cobertura boustrophedon, confirmación de detecciones |
+| **4 (hecha)** | Objetivo que HUYE del dron y se esconde tras edificios; ya no emite su posición | Persecución-evasión, cámara en gimbal, búsqueda desde la última posición vista (creencia que se difunde) |
+| **5 (hecha)** | Varios drones (2-4) que se reparten la búsqueda | **Voronoi**, subasta voraz (CBBA sin consenso), capas de altura y evitación reactiva (reciprocidad de **ORCA**, sin su programa lineal) |
+| **6 (hecha, salvo SITL)** | Banco de pruebas en paralelo con intervalos de confianza, repeticiones de vuelos (grabar, guardar, abrir). Puente a PX4 SITL + Gazebo: no implementado (ver sección 6) | Intervalo de Wilson, registros de vuelo tipo ULog |
 
 ## 6. Estado actual y cómo continuar (para un chat nuevo)
 
-**Estado:** fases 1 (con 1b y 1c) y 2 terminadas; de la fase 2 solo faltan las trayectorias B-spline. 23 tests en
-verde. `eval/resultados.md` compara los dos modos de mapa (3 drones × 16 escenarios × mapa conocido/desconocido):
-46 de 48 combinaciones al 100 % en los dos modos (solo falla el PX4 con viento de 10 m/s, su límite). Repositorio privado:
-https://github.com/Sergio-Osorio09/dron-autonomo (rama `main`).
-Comandos: `python -m pytest -q`, `python server.py` (http://127.0.0.1:7873) y
-`python eval/eval_headless.py --flights 1 --md eval/resultados.md` (~20 min con los dos modos; `--maps desconocido`
-para uno solo).
+**Estado:** fases 1 a 6 terminadas (de la 2 faltan las B-splines; de la 6, el puente a PX4 SITL). 35 tests en
+verde. Resultados en la sección 4. Repositorio privado: https://github.com/Sergio-Osorio09/dron-autonomo (`main`).
+Comandos en `CLAUDE.md` (tests, servidor, las tres evaluaciones con `--jobs` y el banco de pruebas).
+
+**Cómo funcionan las fases 3-6** (detalle en los docstrings de `search.py`, `target.py` y `swarm.py`):
+- `Simulation(search="barrido" | "fronteras" | "bayesiana")`: la zona sale de `search.make_area`; `Mission` va por
+  búsqueda → confirmación → crucero/carrera. `pad`, `pad_z` y `gate` son la verdad (evaluación); el dron usa
+  `pad_est`, `pad_z_est` y `gate_est`. `FLIGHT_PHASES` (sim.py) dice en qué fases protegen la altura mínima y la visión.
+- `motion="huye"`: `target.EvaderMotion` se simula en vuelo (`step`); el dron solo lo ve con `sensors.detect_vehicle`
+  (gimbal); `Mission._track` limita la extrapolación y `_lost` crea una búsqueda de blanco móvil sobre toda la arena.
+- `swarm.Swarm(n, **cfg)`: n simulaciones con `shared` (mundo, creencia, salida, id, capa de altura); cada misión
+  pide su punto con `_team_info` (Voronoi + puntos ajenos). Se usa igual que una `Simulation` (servidor y evaluación).
+  Con `motion="huye"` es persecución en equipo: `share_sighting`, `_flank` (cerco) y el vehículo huye del más cercano
+  (`EvaderMotion.threats`).
+- Repeticiones: todo en el navegador (`recorded`, `startReplay`, `saveFlight`); el servidor no guarda nada.
 
 **Cómo funciona la fase 2** (detalle en el docstring de `dron/mapping.py`):
 - `Simulation(map_mode="desconocido")` crea `sim.map` (OccupancyMap) y activa la cámara de profundidad. Cada barrido
@@ -178,20 +284,32 @@ para uno solo).
   el viento y la evaluación también: son "la realidad".
 
 **Pendientes** (opcionales):
-- Fase 2: trayectorias locales suaves con B-splines tipo EGO-Planner (ahora: A* + estirado + Chaikin + TOPP).
-- **El planificador y Collision Prevention no usan el mismo límite de velocidad.** El plan usa
-  √(2·a·(alcance − radio − 1)) y Collision Prevention frena con a/2 y más distancia de seguridad. El dron se queda
-  atrás de la referencia, se desvía más de 3 m y replanifica (~8 veces por vuelo incluso sin ruido ni viento).
-  Unificarlos daría trayectorias más fieles, pero cambia los resultados de la fase 1.
+- Fase 2: trayectorias B-spline de verdad al estilo EGO-Planner. Hay una versión sencilla (`DRON_SMOOTHER=bspline`)
+  que no mejora a Chaikin (lección 3d.13); le faltan la factibilidad dinámica y el reparto de tiempos.
+- Fase 6: puente a PX4 SITL + Gazebo (enviar las referencias p/v/a por MAVSDK en modo offboard y leer el estado de
+  EKF2). No se ha hecho: hay que instalar PX4 y Gazebo, fuera de este proyecto en Python.
+- El planificador y Collision Prevention no usan el mismo límite de velocidad (el dron replanifica ~5 veces por
+  vuelo al quedarse atrás). Unificarlos se probó y no mejora (lección 3d.11).
+- Fase 4 con un solo dron: 83 % de capturas y ~1,5 min (con 2-3 drones, 97 % y ~50 s). Se probaron tres ideas para
+  un solo dron (interceptar desde arriba, sesgar la creencia, ir a la última posición conocida): ninguna mejora.
+- Rendimiento: 4 drones con mapa desconocido van a 1,7× tiempo real (lo que más cuesta es recalcular el ESDF).
 - El tirón (jerk) del perfil de velocidad es aproximado (suavizado), no una curva en S exacta.
 - PX4 genérico con viento de 10 m/s: aterriza a ~1 m de la plataforma o choca con ráfagas fuertes (está en su límite).
 - La batería se gasta, pero no hay "volver a casa con batería baja" (RTL por batería, como PX4).
 - Con mapa desconocido la carrera contra objetivos rápidos es muy variable (15-40 s), igual que con mapa conocido.
 - Idea descartada por ahora: modo "carrera sin red" que ignore el límite de velocidad por alcance de sensores.
 
-**Siguiente: fase 3** (misión de búsqueda). Ya existe la base: el mapa de ocupación, la niebla de lo no explorado
-(`map.seen`) y la cámara de profundidad. Falta la cámara con cono y oclusión para *detectar* el objetivo, el mapa de
-probabilidad (búsqueda bayesiana) y la exploración por fronteras (FUEL) sobre `map.seen`.
+**Siguiente:** lo pendiente de arriba, o pasar a hardware real: lista de piezas y atributos en `docs/HARDWARE.md`
+(~1000-1100 $ por dron: X500 V2, Pixhawk 6C Mini con PX4, RPLIDAR C1, OAK-D Lite, Raspberry Pi 5).
+
+**¿Laya puede mejorar la búsqueda?** (analizado el 25-09-2026) El repositorio github.com/aayushch/laya no es un
+modelo: es una aplicación de escritorio que ordena notificaciones (Slack, Gmail, GitHub...) llamando a LLMs externos;
+no aporta nada al dron. El modelo Laya de `../laya-drone` (convaiinnovations/laya, 322 M parámetros, solo texto)
+pilota a partir de sensores en texto: 78 % de éxito frente al 100 % del experto clásico, a ~25 ms por decisión en una
+RTX 4060. Para la búsqueda no mejora lo que hay: no ve imágenes (el detector tiene que ser de visión, tipo YOLO) y la
+elección del siguiente punto ya la resuelve la búsqueda bayesiana, que es óptima para su modelo, explicable y tarda
+milisegundos. Único uso con sentido: convertir un aviso en texto ("se perdió cerca del río, iba hacia el norte") en
+una creencia a priori sobre el mapa; para eso rinde más un LLM general que un modelo de 322 M ajustado a pilotar.
 
 **Preferencias del usuario:** todo en español; algoritmos que se usen en drones reales y datos reales con su fuente;
 que se vea bien en pantalla; medir antes de afirmar (tests y evaluación tras cada cambio); explicar las decisiones.

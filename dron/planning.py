@@ -8,7 +8,11 @@
    obstáculos" de EGO-Planner).
 3. Estirado de cuerda (string pulling / line-of-sight, lo mismo que hace Theta*): se quitan los puntos
    intermedios mientras el segmento directo siga libre. Quedan tramos rectos largos.
-4. Suavizado de esquinas (Chaikin, 3 iteraciones, comprobando colisión) y remuestreo cada 0,25 m.
+4. Suavizado: B-spline cúbica optimizada como EGO-Planner (Zhou et al., 2021) si SMOOTHER = "bspline": puntos de
+   control cada metro sobre el camino y descenso de gradiente con coste de suavidad (aceleración de la curva,
+   diferencias segundas de los puntos de control) + coste de colisión (penalización cuadrática si la holgura del
+   ESDF baja de radio + margen + 0,4 m, con su gradiente). Si la curva no queda libre, se usa Chaikin (3
+   iteraciones comprobando colisión), que es el método por defecto. Después, remuestreo cada 0,25 m.
 5. Perfil de velocidad óptimo en tiempo (el enfoque TOPP de los planificadores de trayectorias):
      * límite por curvatura: v ≤ √(a_lat / κ) (en curvas cerradas hay que frenar);
      * límite vertical: la componente vertical no supera la subida/bajada máxima del dron;
@@ -23,6 +27,7 @@ que construye el dron (fase 2: `mapping.LearnedGrid`, que tiene la misma interfa
 un `space`: cualquier objeto con `clearance(p, limit)`.
 """
 import heapq
+import os
 import math
 from typing import List, Optional, Tuple
 
@@ -290,6 +295,54 @@ def velocity_profile(P: np.ndarray, prof: Profile, v_cruise: float, end_speed: f
     return np.maximum(v, 0.0)
 
 
+SMOOTHER = os.environ.get("DRON_SMOOTHER", "chaikin")   # "bspline" (EGO-Planner) o "chaikin"
+
+
+def grid_clearance(grid, P) -> np.ndarray:
+    """Holgura interpolada (trilineal) en muchos puntos, para la rejilla del mundo o la aprendida (misma interfaz)."""
+    from .mapping import LearnedGrid
+    return LearnedGrid.clearance_many(grid, P)
+
+
+def _bspline_eval(Q: np.ndarray, per_seg: int = 8) -> np.ndarray:
+    """Puntos de una B-spline cúbica uniforme "sujeta" (pasa por el primer y el último punto de control)."""
+    Qp = np.vstack([Q[:1], Q[:1], Q, Q[-1:], Q[-1:]])
+    u = np.linspace(0, 1, per_seg, endpoint=False)
+    B = np.stack([(1 - u) ** 3, 3 * u ** 3 - 6 * u ** 2 + 4, -3 * u ** 3 + 3 * u ** 2 + 3 * u + 1, u ** 3], axis=1) / 6
+    out = [B @ Qp[i:i + 4] for i in range(len(Qp) - 3)]
+    return np.vstack(out + [Q[-1:]])
+
+
+def bspline_smooth(grid, pts, need: float, iters: int = 40):
+    """Optimiza los puntos de control de una B-spline sobre el camino (suavidad + holgura con el ESDF)."""
+    Q = resample(pts, 1.0).copy()
+    n = len(Q)
+    if n < 6:
+        return None
+    free = np.ones(n, bool)
+    free[[0, 1, n - 2, n - 1]] = False       # extremos fijos (salida y meta)
+    want = need + 0.4
+    h = 0.25
+    for _ in range(iters):
+        A = Q[:-2] - 2 * Q[1:-1] + Q[2:]      # "aceleración" de los puntos de control
+        g = np.zeros_like(Q)
+        g[:-2] += 2 * A
+        g[1:-1] -= 4 * A
+        g[2:] += 2 * A
+        c = grid_clearance(grid, Q)
+        viol = np.maximum(want - c, 0.0)
+        k = np.flatnonzero((viol > 0) & free)
+        if len(k):
+            grad = np.stack([(grid_clearance(grid, Q[k] + e) - grid_clearance(grid, Q[k] - e)) / (2 * h)
+                             for e in np.eye(3) * h], axis=1)
+            g[k] += 10.0 * (-2 * viol[k, None] * grad)
+        step = -0.05 * g
+        lim = np.linalg.norm(step, axis=1, keepdims=True)
+        step *= np.minimum(1.0, 0.3 / np.maximum(lim, 1e-9))   # como mucho 0,3 m por iteración
+        Q[free] += step[free]
+    return list(_bspline_eval(Q))
+
+
 def plan(world, grid, prof: Profile, start, goal, v_cruise: Optional[float] = None,
          end_speed: float = 0.0, margin: float = MARGIN, start_speed: float = 0.0):
     """Trayectoria de start a goal (puntos 3D) o None si no hay camino. end_speed > 0: cruza el final sin frenar.
@@ -300,6 +353,9 @@ def plan(world, grid, prof: Profile, start, goal, v_cruise: Optional[float] = No
     `margin` es la holgura de seguridad deseada; si con ella no hay camino, se prueba con márgenes menores
     (hasta el mínimo MARGIN). Así, con un GPS malo, el dron deja más espacio a los obstáculos cuando se puede.
     """
+    # la meta nunca fuera de la arena (p. ej. un objetivo que huye extrapolado por el filtro más allá del borde:
+    # el dron lo perseguía hasta rozar la geovalla)
+    goal = np.array([min(max(goal[0], 2.0), LENGTH - 2.0), min(max(goal[1], 2.0), WIDTH - 2.0), goal[2]], float)
     cells, need = None, prof.radius + MARGIN
     for m in sorted({margin, (margin + MARGIN) / 2, MARGIN}, reverse=True):
         need = prof.radius + m
@@ -310,7 +366,11 @@ def plan(world, grid, prof: Profile, start, goal, v_cruise: Optional[float] = No
         return None
     pts = [np.array(start, float)] + [grid.center(c) for c in cells[1:-1]] + [np.array(goal, float)]
     pts = string_pull(world, pts, need)
-    pts = chaikin(world, pts, need)
+    smooth = bspline_smooth(grid, pts, need) if SMOOTHER == "bspline" else None
+    if smooth is not None and all(segment_clear(world, a, b, need, 0.5) for a, b in zip(smooth, smooth[1:])):
+        pts = smooth
+    else:
+        pts = chaikin(world, pts, need)
     P = resample(pts, DS)
     if len(P) < 3:
         P = resample([np.array(start, float), (np.array(start) + np.array(goal)) / 2, np.array(goal, float)], DS)

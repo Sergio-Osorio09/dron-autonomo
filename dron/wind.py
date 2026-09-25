@@ -27,6 +27,7 @@ from .world import Box, World
 
 FT = 0.3048
 GUST_LEVELS = {0: 0.0, 1: 1.0, 2: 2.0, 3: 3.0}
+TURB_MAX = 2.0   # multiplicador máximo de la turbulencia en estelas (ESTIMADO)
 
 
 class Wind:
@@ -92,7 +93,9 @@ class Wind:
                 f *= 0.4
                 turb += 1.5
                 break
-        return f, turb
+        # la turbulencia de una estela es, como mucho, del orden del doble (ESTIMADO). Sin tope, varias estelas
+        # sumadas daban ×5: ráfagas de 29 m/s con 6 m/s de viento medio sobre una azotea
+        return f, min(turb, TURB_MAX)
 
     def mean(self, p) -> Tuple[float, float, float]:
         """Viento medio (sin ráfagas) en el punto p, con cizalladura y el efecto de obstáculos y relieve."""
