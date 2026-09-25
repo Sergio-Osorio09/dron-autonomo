@@ -26,7 +26,7 @@ from .mapping import OccupancyMap
 from .mission import GATE_RADIUS, PAD_RADIUS, Mission
 from .params import PROFILES
 from .planning import ClearanceGrid, astar, MARGIN
-from .sensors import NOISE_LEVELS, RAIN, Sensors
+from .sensors import NOISE_LEVELS, RAIN, Sensors, clearance_below, depth_sectors
 from .wind import Wind
 from .world import LENGTH, WIDTH, make_world
 
@@ -82,7 +82,10 @@ class Simulation:
         self.est = Estimator(self.drone.p.copy(), self.prof.gps_sigma, NOISE_LEVELS[noise])
         self.ctrl = PositionController(self.prof)
         self.map = OccupancyMap() if map_mode == "desconocido" else None
-        self.sensors.depth_on = self.map is not None
+        # la cámara de profundidad construye el mapa (fase 2) y alimenta Collision Prevention (en los dos modos)
+        self.sensors.depth_on = self.map is not None or collision_prevention
+        self._sectors = []
+        self._below = math.inf
         self.mission = Mission(self.world, self.grid, self.prof, precision_landing, mode, self.sensors.range,
                                self.map)
         self.mission.yaw = yaw
@@ -135,14 +138,19 @@ class Simulation:
             est.gps(r["gps_pos"], r["gps_vel"])
         if "baro" in r:
             est.baro(r["baro"])
+        if "depth" in r:
+            self._sectors = depth_sectors(r["depth"], self.prof.radius + 0.5)
+            self._below = clearance_below(r["depth_down"], self.prof.radius + 0.5)
         if self.map is not None:  # el mapa se construye desde donde el dron CREE estar
             if "rays" in r:
                 self.map.insert(est.p, [x["dir"] for x in r["rays"]], [x["dist"] for x in r["rays"]], self.sensors.range)
             if "depth" in r:
-                dep = r["depth"]
-                self.map.insert(est.p, dep["dirs"], dep["dist"], dep["max"])
-                hit = np.isfinite(dep["dist"]) & (dep["dist"] < dep["max"] - 1e-3)
-                self._depth_pts = (d.p + dep["dirs"][hit] * dep["dist"][hit, None]).round(1)
+                pts = []
+                for dep in (r["depth"], r["depth_down"]):
+                    self.map.insert(est.p, dep["dirs"], dep["dist"], dep["max"])
+                    hit = np.isfinite(dep["dist"]) & (dep["dist"] < dep["max"] - 1e-3)
+                    pts.append(d.p + dep["dirs"][hit] * dep["dist"][hit, None])
+                self._depth_pts = np.concatenate(pts).round(1)
         elif "rays" in r:
             down = next(x for x in r["rays"] if x["label"] == "down")
             est.range_down(down["dist"], self.world.surface(est.p[0], est.p[1]))
@@ -189,6 +197,17 @@ class Simulation:
                 ((1.0, 0.0, 0.0), LENGTH - ex), ((-1.0, 0.0, 0.0), ex), ((0.0, 1.0, 0.0), WIDTH - ey), ((0.0, -1.0, 0.0), ey))
                 if dd < self.sensors.range]
             rays = self.sensors.last_rays + fence
+            if m.phase in ("crucero", "carrera", "persecución", "reintento"):
+                # en vuelo, la cámara de profundidad (en sectores, como PX4) ve lo que el anillo horizontal no ve:
+                # la copa de un árbol unos centímetros por debajo del plano de los telémetros
+                rays = rays + self._sectors
+                # y la visión inferior (con el rayo de abajo) limita la BAJADA sobre lo que haya debajo, con una
+                # distancia de seguridad pequeña para no estorbar a la puerta de meta, que está a 1 m del suelo
+                down = [x["dist"] for x in self.sensors.last_rays if x["label"] == "down"]
+                below = min(down + [self._below])
+                if below < self.sensors.range:
+                    rays = rays + [{"label": "abajo", "dir": (0.0, 0.0, -1.0), "dist": below,
+                                    "d_safe": self.prof.radius + 0.3}]
         t_vec = self.ctrl.update(est.p.copy(), est.v.copy(), p_ref, v_ref, a_ref, DT, rays)
         d.cmd_z = t_vec / np.linalg.norm(t_vec)
         d.cmd_thrust = float(t_vec @ d.z_body)

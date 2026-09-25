@@ -83,7 +83,8 @@ def collision_prevention(v_sp, a_ref, rays, prof, v_now=None):
     rays: [{"dir": (x, y, z), "dist": d, "label": ...}] de los telémetros (distancias medidas, con su ruido).
     Los rayos que miran hacia abajo (abajo y frontal-inferior) no cuentan: casi siempre ven el SUELO, y el suelo
     lo gestionan el despegue y el aterrizaje (si no, el dron no podría aterrizar). Los obstáculos bajos delante
-    los ve el anillo horizontal.
+    los ve el anillo horizontal. Excepción: un rayo con su propia distancia de seguridad (`d_safe`), que la simulación
+    añade en crucero con el rayo inferior para no bajar sobre la copa de un árbol.
     """
     # distancia de seguridad dinámica: margen fijo + lo que recorre durante el tiempo de reacción (0,3 s)
     speed = float(np.linalg.norm(v_now)) if v_now is not None else 0.0
@@ -96,9 +97,10 @@ def collision_prevention(v_sp, a_ref, rays, prof, v_now=None):
         v_sp = v_sp * (v_cap / n)
     for r in rays:
         u = np.array(r["dir"])
-        if u[2] < -0.3 or r["dist"] >= reach - 1e-6:
+        own = r.get("d_safe")
+        if (u[2] < -0.3 and own is None) or r["dist"] >= reach - 1e-6:
             continue
-        room = r["dist"] - d_safe
+        room = r["dist"] - (own if own is not None else d_safe)
         along = float(v_sp @ u)
         v_lim = math.sqrt(2 * acc * max(room, 0.0))
         if room < 0:                      # demasiado cerca: alejarse un poco

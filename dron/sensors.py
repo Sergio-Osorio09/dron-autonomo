@@ -14,7 +14,11 @@
     profundidad                      de la Intel RealSense D435, la cámara que usan EGO-Planner y los drones del FAST
                                      Lab); alcance el del perfil; ruido 2 % + 2 cm (D435: error < 2 % a 2 m); un 3 %
                                      de píxeles sin dato (se descartan, no se toman como "libre"). Es lo que usa el
-                                     dron para CONSTRUIR SU MAPA en la fase 2 (junto con los 40 telémetros).
+                                     dron para CONSTRUIR SU MAPA en la fase 2 (junto con los 40 telémetros). En vuelo,
+                                     también alimenta Collision Prevention en 72 sectores (como OBSTACLE_DISTANCE).
+    visión inferior     10 Hz        otra cámara de profundidad igual, 16 × 12 rayos, mirando HACIA ABAJO (los DJI
+                                     Mini 3 y Matrice 350 llevan visión inferior): mapa del suelo y de lo que hay
+                                     debajo, y freno de la bajada sobre copas y arbustos.
     cámara inferior     20 Hz        posición relativa de la plataforma (aterrizaje de precisión, como el
                                      IR-LOCK de PX4) si está a menos de 5 m en horizontal y 10 m por encima; σ 5 cm
 
@@ -57,6 +61,54 @@ def depth_dirs(yaw: float) -> np.ndarray:
     el = np.radians(np.linspace(-DEPTH_VFOV / 2, DEPTH_VFOV / 2, DEPTH_ROWS))
     A, E = np.meshgrid(az, el, indexing="ij")
     return np.stack([np.cos(A) * np.cos(E), np.sin(A) * np.cos(E), np.sin(E)], axis=-1).reshape(-1, 3)
+
+
+DOWN_COLS, DOWN_ROWS = 16, 12
+
+
+def depth_down_dirs(yaw: float) -> np.ndarray:
+    """Píxeles de la cámara inferior: eje óptico hacia abajo, 58° a lo largo del rumbo y 87° a lo ancho."""
+    u = np.tan(np.radians(np.linspace(-DEPTH_VFOV / 2, DEPTH_VFOV / 2, DOWN_ROWS)))   # adelante/atrás
+    v = np.tan(np.radians(np.linspace(-DEPTH_HFOV / 2, DEPTH_HFOV / 2, DOWN_COLS)))   # izquierda/derecha
+    U, W = np.meshgrid(u, v, indexing="ij")
+    f, l = np.array([math.cos(yaw), math.sin(yaw), 0.0]), np.array([-math.sin(yaw), math.cos(yaw), 0.0])
+    D = U.reshape(-1, 1) * f + W.reshape(-1, 1) * l + np.array([0.0, 0.0, -1.0])
+    return D / np.linalg.norm(D, axis=1, keepdims=True)
+
+
+def clearance_below(depth: Dict, radius: float) -> float:
+    """Distancia vertical a lo más alto que hay bajo el dron (dentro de un círculo de `radius` m alrededor de su
+    vertical), medida con la cámara inferior. Infinito si no ve nada."""
+    d, D = depth["dist"], depth["dirs"]
+    ok = np.isfinite(d) & (d < depth["max"] - 1e-3)
+    rel = D[ok] * d[ok, None]
+    rel = rel[np.hypot(rel[:, 0], rel[:, 1]) <= radius]
+    return float(-rel[:, 2].max()) if len(rel) else math.inf
+
+
+SECTORS = 72  # OBSTACLE_DISTANCE de MAVLink / Collision Prevention de PX4: 72 sectores de 5°
+
+
+def depth_sectors(depth: Dict, band: float) -> List[Dict]:
+    """Comprime la imagen de profundidad en sectores horizontales, como hace el ordenador de a bordo para la
+    Collision Prevention de PX4 (mensaje OBSTACLE_DISTANCE): en cada sector de 5°, la distancia horizontal a lo más
+    cercano dentro de una franja vertical de ±`band` m alrededor del dron (lo de más abajo es el suelo).
+    Usa la medida RELATIVA de la cámara (dirección × distancia): no depende del GPS."""
+    d, D = depth["dist"], depth["dirs"]
+    ok = np.isfinite(d) & (d < depth["max"] - 1e-3)
+    rel = D[ok] * d[ok, None]
+    rel = rel[np.abs(rel[:, 2]) <= band]
+    if not len(rel):
+        return []
+    hd = np.hypot(rel[:, 0], rel[:, 1])
+    k = ((np.degrees(np.arctan2(rel[:, 1], rel[:, 0])) + 360.0) % 360.0 / (360.0 / SECTORS)).astype(int) % SECTORS
+    best = np.full(SECTORS, np.inf)
+    np.minimum.at(best, k, hd)
+    out = []
+    for i in np.flatnonzero(np.isfinite(best)):
+        a = math.radians((i + 0.5) * 360.0 / SECTORS)
+        out.append({"label": "profundidad", "dir": (math.cos(a), math.sin(a), 0.0), "dist": float(best[i])})
+    return out
 
 
 class GaussMarkov:
@@ -135,11 +187,12 @@ class Sensors:
         if self.depth_on and t >= self.next["depth"]:
             self.next["depth"] = t + 1.0 / DEPTH_HZ
             out["depth"] = self.depth(p, yaw, world)
+            out["depth_down"] = self.depth(p, yaw, world, down=True)
         return out
 
-    def depth(self, p, yaw, world) -> Dict:
+    def depth(self, p, yaw, world, down: bool = False) -> Dict:
         """Imagen de profundidad: direcciones y distancias medidas (NaN = píxel sin dato)."""
-        D = depth_dirs(yaw)
+        D = depth_down_dirs(yaw) if down else depth_dirs(yaw)
         rmax = self.range
         true = world.rays(p, D, rmax)
         g = self.np_rng

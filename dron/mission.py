@@ -199,12 +199,13 @@ class Mission:
                     # con radio + 0,3 m: basta para ver si hay un árbol o un edificio en medio.
                     d = gate - est_p
                     n = float(np.linalg.norm(d))
-                    if n < 3.0:
+                    if n < 1.2:
                         self.los_clear = True
                     else:
                         u = d / n
-                        self.los_clear = segment_clear(self._space()[0], est_p + u, gate - 1.5 * u,
-                                                       self.prof.radius + 0.3, 0.4)
+                        a = est_p + u * min(1.0, 0.3 * n)
+                        b = gate - u * min(1.5, 0.5 * n)
+                        self.los_clear = segment_clear(self._space()[0], a, b, self.prof.radius + 0.3, 0.3)
             if np.linalg.norm(gate[:2] - est_p[:2]) < 12.0 and self.los_clear:  # cerca y a la vista: persecución
                 self.phase = "persecución"
                 p_t, v_t = self.tracker.state_at(t + 0.5)

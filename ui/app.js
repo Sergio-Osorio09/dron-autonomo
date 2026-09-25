@@ -380,7 +380,7 @@ function drawRays(center) {
 }
 
 // ecos de la cámara de profundidad (lo que ve ahora mismo)
-const DEPTH_N = 400;
+const DEPTH_N = 600;  // cámara frontal (336) + inferior (192)
 const depthGeo = new THREE.BufferGeometry();
 depthGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(DEPTH_N * 3), 3));
 const depthPts = new THREE.Points(depthGeo, new THREE.PointsMaterial({ color: "#22d3ee", size: 0.14, transparent: true, opacity: 0.85 }));

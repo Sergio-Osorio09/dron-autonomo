@@ -37,7 +37,8 @@ un mapa de ocupación 3D mientras vuela, planifica sobre él y replanifica cada 
   Los edificios, árboles y montañas crean **estelas de abrigo** (menos viento, más turbulencia) y el viento se
   acelera sobre azoteas y cimas.
 - **Lluvia:** reduce el alcance y la precisión de telémetros, cámara y GPS, y añade arrastre.
-- **Sensores con ruido:** IMU con sesgo, GPS con deriva, barómetro, brújula, 40 telémetros y cámara inferior.
+- **Sensores con ruido:** IMU con sesgo, GPS con deriva, barómetro, brújula, 40 telémetros, cámara inferior y dos
+  cámaras de profundidad (frontal e inferior).
   Niveles ideal, realista y alto.
 - **Mapa que construye el propio dron (fase 2):** una cámara de profundidad (campo de visión de la RealSense
   D435) y los telémetros alimentan un **mapa de ocupación 3D con log-odds**, como OctoMap, insertado desde la
@@ -82,13 +83,13 @@ ejemplo, entrenando un modelo), la calidad gráfica baja sola para mantener la f
 Tabla completa (3 drones × 16 escenarios × mapa conocido y desconocido, mismos mundos para todos) en
 [eval/resultados.md](eval/resultados.md):
 
-- **Sin conocer el mundo, 46 de 48 combinaciones al 100 %** (con el mapa conocido, 44 de 48): los tres drones en
+- **Sin conocer el mundo, 46 de 48 combinaciones al 100 %** (igual que con el mapa conocido): los tres drones en
   calma y con viento, montaña con meta en la cima, azotea, precipicios, bosque extremo, lluvia fuerte, carreras y
   **objetivo en movimiento**.
-- **Coste de construir el mapa:** +5 % de tiempo (22,2 s frente a 21,2 s de media). Cada replanificación tarda ~15 ms.
+- **Coste de construir el mapa:** +2 % de tiempo (22,4 s frente a 22,0 s de media). Cada replanificación tarda ~15 ms.
 - **Límites reales:** el PX4 genérico, con viento de 10 m/s (su límite), aterriza a ~1 m de la plataforma con ráfagas
-  moderadas y choca con ráfagas fuertes.
-- **Precisión:** aterriza a 2-40 cm del centro. Error del filtro: ~1,2 m con el GPS del Mini, ~0,7 m con PX4 y
+  moderadas y choca 2 de 3 veces con ráfagas fuertes.
+- **Precisión:** aterriza a 3-36 cm del centro. Error del filtro: ~1,2 m con el GPS del Mini, ~0,7 m con PX4 y
   ~0,2 m con RTK.
 
 ## Uso

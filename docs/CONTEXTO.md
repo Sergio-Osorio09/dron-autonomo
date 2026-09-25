@@ -16,11 +16,11 @@ sensores con ruido → estimación (Kalman) → [mapa] → misión → planifica
 | Física | `dron/dynamics.py` | Masa puntual con actitud; arrastre deducido de v_max; inercia de motores y actitud | Modelo de simuladores de planificación (FAST Lab, Flightmare) |
 | Mundo | `dron/world.py` | Terreno con relieve (mapa de alturas), obstáculos apoyados en él, densidad, meta en suelo/azotea/cima/aire | — |
 | Viento | `dron/wind.py` | Medio + cizalladura logarítmica + turbulencia **Dryden** + estelas de abrigo tras obstáculos y relieve, aceleración sobre azoteas y cimas | MIL-F-8785C / MIL-HDBK-1797; modelos de estela simplificados (no CFD) |
-| Sensores | `dron/sensors.py` | IMU, GPS con deriva, barómetro, brújula, 40 telémetros, cámara inferior y (fase 2) **cámara de profundidad** de 24 × 14 rayos; la lluvia degrada alcance y precisión | Ruidos tipo EKF2 de PX4; campo de visión de la Intel RealSense D435 |
+| Sensores | `dron/sensors.py` | IMU, GPS con deriva, barómetro, brújula, 40 telémetros, cámara inferior y **cámaras de profundidad** frontal (24 × 14 rayos) e inferior (16 × 12); la lluvia degrada alcance y precisión | Ruidos tipo EKF2 de PX4; campo de visión de la Intel RealSense D435 |
 | Mapa (fase 2) | `dron/mapping.py` | **Mapa de ocupación 3D con log-odds** (vóxeles de 1 m) construido desde la posición estimada; suposición 2,5D; **ESDF** con transformada de distancia exacta; lo desconocido es libre para planificar | OctoMap (parámetros de octomap_server), Voxblox/FIESTA, Fast-Planner/EGO-Planner |
 | Estimación | `dron/estimator.py` | Filtro de Kalman de 9 estados con puertas de innovación | EKF2 de PX4 |
 | Planificación | `dron/planning.py` | Campo de distancias + **A\*** + estirado de cuerda + Chaikin + perfil de velocidad óptimo en tiempo; funciona igual con el mundo conocido o con el mapa aprendido | Voxblox/FIESTA (ESDF), Theta*, TOPP |
-| Control | `dron/control.py` | Cascada posición → velocidad (PID) → aceleración → inclinación y empuje; **Collision Prevention** | `mc_pos_control` y CollisionPrevention de PX4 |
+| Control | `dron/control.py` | Cascada posición → velocidad (PID) → aceleración → inclinación y empuje; **Collision Prevention** con telémetros, cámara frontal en 72 sectores y visión inferior | `mc_pos_control` y CollisionPrevention de PX4 |
 | Objetivo móvil | `dron/target.py` | Vehículo que recorre el terreno (suave, medio, rápido, variable); **filtro de Kalman de velocidad constante** para seguirlo; **punto de intercepción** | Seguimiento de blancos y guiado con adelanto (lead pursuit) |
 | Misión | `dron/mission.py` | Con mapa desconocido, comprueba la trayectoria cada vez que cambia el mapa y **replanifica** sin frenar; si no hay camino, espera y reintenta. Modo **aterrizar** (despegue → crucero → aproximación → aterrizaje de precisión) o **carrera** (cruzar la meta sin frenar); velocidad limitada por el alcance de los sensores; margen según la incertidumbre del filtro | Modos Takeoff/Mission/Land e IR-LOCK de PX4 |
 | Simulación | `dron/sim.py` | Bucle a 200 Hz que une todo; `map_mode` = `conocido` (fase 1) o `desconocido` (fase 2) | — |
@@ -121,23 +121,26 @@ Todos están en `dron/params.py`, con fuente:
    67 s). Ahora se comprueba solo el tramo intermedio con radio + 0,3 m, suficiente para ver si hay un árbol o un
    edificio en medio. La carrera contra el objetivo rápido es muy variable en los dos modos: con 9 vuelos, el PX4
    tardó 32 s de media con mapa conocido y 21,5 s con desconocido.
-8. **Hueco de la fase 1 que ha salido a la luz: descender sobre la copa de un árbol.** El anillo de telémetros es
-   horizontal y el rayo inferior no cuenta en Collision Prevention (para poder aterrizar). Un dron que vuela a
-   8,4 m y baja despacio sobre un árbol de 8,3 m no lo ve. Con el cambio del sensor sin eco (lección 1), un vuelo
-   de carrera con mapa conocido (PX4, objetivo suave, mixto, semilla 500) cambió lo justo para caer en él. Está
-   pendiente (ver sección 6).
+8. **Hueco de la fase 1: rozar la copa de un árbol o caer sobre un arbusto.** El anillo de telémetros es un plano
+   horizontal: un dron a 8,4 m no ve la copa de un árbol de 8,3 m, pero su cuerpo (radio 0,3 m) la toca. Y
+   persiguiendo un objetivo, bajaba a 1,6 m/s sobre un arbusto que tenía debajo y un poco delante. Se resolvió
+   como en los drones reales: (a) la cámara de profundidad alimenta Collision Prevention en 72 sectores de 5°
+   (lo más cercano dentro de una franja de ±(radio + 0,5 m) alrededor de la altura del dron), como el mensaje
+   OBSTACLE_DISTANCE de PX4; (b) una segunda cámara de profundidad mira hacia abajo (visión inferior, como la de
+   los DJI) y limita la bajada sobre lo que haya bajo el dron, con una distancia de seguridad pequeña (radio +
+   0,3 m) para no estorbar a la puerta de meta. Solo actúa en crucero, carrera y persecución; no en el
+   aterrizaje. Resultado: 46 de 48 combinaciones al 100 % en los dos modos de mapa.
 
 ## 4. Resultados
 
 Ver `eval/resultados.md` (3 drones × 16 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera y
 objetivo en movimiento; cada uno con mapa conocido y desconocido).
 
-- **Mapa desconocido: 46 de 48 combinaciones al 100 %** (mapa conocido: 44 de 48). Solo falla el PX4 con viento de
-  10 m/s, que es su límite en los dos modos.
-- **Coste de no conocer el mundo:** en las 44 combinaciones que los dos modos completan al 100 %, el tiempo medio pasa
-  de 21,2 s a 22,2 s (+5 %). Las mayores diferencias están en las carreras contra objetivos rápidos, que son muy
-  variables en los dos modos (lección 3b.7).
-- Replanificaciones por el mapa: de media entre 0,3 y 29 por vuelo (más en persecuciones). Cada una tarda ~15 ms.
+- **46 de 48 combinaciones al 100 % en los dos modos de mapa.** Solo falla el PX4 con viento de 10 m/s (su límite):
+  aterriza fuera de la plataforma con ráfagas moderadas y choca 2 de 3 veces con ráfagas fuertes y ruido alto.
+- **Coste de no conocer el mundo:** en las 46 combinaciones que los dos modos completan al 100 %, el tiempo medio pasa
+  de 22,0 s a 22,4 s (+2 %). Las carreras contra objetivos rápidos son muy variables en los dos modos (lección 3b.7).
+- Replanificaciones por el mapa: de media entre 0,3 y 34 por vuelo (más en persecuciones). Cada una tarda ~15 ms.
 
 ## 5. Fases del proyecto
 
@@ -156,7 +159,7 @@ objetivo en movimiento; cada uno con mapa conocido y desconocido).
 
 **Estado:** fases 1 (con 1b y 1c) y 2 terminadas; de la fase 2 solo faltan las trayectorias B-spline. 23 tests en
 verde. `eval/resultados.md` compara los dos modos de mapa (3 drones × 16 escenarios × mapa conocido/desconocido):
-46 de 48 combinaciones al 100 % con mapa desconocido y 44 de 48 con conocido. Repositorio privado:
+46 de 48 combinaciones al 100 % en los dos modos (solo falla el PX4 con viento de 10 m/s, su límite). Repositorio privado:
 https://github.com/Sergio-Osorio09/dron-autonomo (rama `main`).
 Comandos: `python -m pytest -q`, `python server.py` (http://127.0.0.1:7873) y
 `python eval/eval_headless.py --flights 1 --md eval/resultados.md` (~20 min con los dos modos; `--maps desconocido`
@@ -176,9 +179,6 @@ para uno solo).
 
 **Pendientes** (opcionales):
 - Fase 2: trayectorias locales suaves con B-splines tipo EGO-Planner (ahora: A* + estirado + Chaikin + TOPP).
-- **Collision Prevention no ve hacia abajo en crucero** (lección 3b.8): descender sobre la copa de un árbol puede
-  acabar en choque. Idea: en crucero, usar el rayo inferior solo para limitar la bajada, con una distancia de
-  seguridad pequeña (radio + 0,3 m) para no estorbar al aterrizaje ni a la puerta de meta.
 - **El planificador y Collision Prevention no usan el mismo límite de velocidad.** El plan usa
   √(2·a·(alcance − radio − 1)) y Collision Prevention frena con a/2 y más distancia de seguridad. El dron se queda
   atrás de la referencia, se desvía más de 3 m y replanifica (~8 veces por vuelo incluso sin ruido ni viento).
