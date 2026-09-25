@@ -23,7 +23,7 @@ from dron.search import SEARCH_MODES
 from dron.sim import MAP_MODES, Simulation
 from dron.swarm import SWARM_MAX, Swarm
 from dron.target import MOTIONS
-from dron.world import DENSITIES, GOAL_KINDS, LEVELS, TERRAINS
+from dron.world import ALL_LEVELS, DENSITIES, GOAL_KINDS, TERRAINS
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOST, PORT = "127.0.0.1", int(os.environ.get("PORT", 7873))
@@ -131,7 +131,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, f.read(), ctype)
         if self.path == "/api/options":
             return self._send(200, {"profiles": {k: p.to_dict() for k, p in PROFILES.items()},
-                                    "levels": list(LEVELS), "noise": list(NOISE_LEVELS), "terrains": list(TERRAINS),
+                                    "levels": list(ALL_LEVELS), "noise": list(NOISE_LEVELS), "terrains": list(TERRAINS),
                                     "densities": list(DENSITIES), "goal_kinds": list(GOAL_KINDS),
                                     "modes": list(MODES), "rain": list(RAIN), "motions": list(MOTIONS),
                                     "map_modes": list(MAP_MODES), "searches": list(SEARCH_MODES),

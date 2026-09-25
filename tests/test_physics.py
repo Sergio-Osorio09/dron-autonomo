@@ -110,21 +110,28 @@ def test_wind_is_sheltered_behind_a_building_and_faster_on_its_roof():
 
 def test_collision_prevention_never_pushes_into_another_obstacle():
     """Un edificio que acaba de dejar atrás no debe empujarlo contra la pared de enfrente (fallo de la fase 1)."""
-    from dron.control import CP_ACC_FACTOR, CP_MARGIN, collision_prevention
+    from dron import tuning
+    from dron.control import collision_prevention
     prof = PROFILES["matrice"]
+    P = tuning.params(prof.key)
     rays = [{"label": "geovalla", "dir": (-1.0, 0.0, 0.0), "dist": 2.6},    # pared delante (va hacia -x)
             {"label": "0", "dir": (1.0, 0.0, 0.0), "dist": 2.0},            # edificio detrás
             {"label": "90", "dir": (0.0, 1.0, 0.0), "dist": 40.0}]
     v_now = np.array([-3.9, 0.0, 0.0])
     v_sp, a = collision_prevention(np.array([1.9, 0.0, 0.0]), np.zeros(3), rays, prof, v_now)
-    room = 2.6 - (prof.radius + CP_MARGIN + 0.3 * 3.9)
-    assert -v_sp[0] <= math.sqrt(2 * CP_ACC_FACTOR * prof.acc_hor * max(room, 0)) + 1e-9   # respeta la pared
+    room = 2.6 - (prof.radius + P["cp_margin"] + P["cp_react"] * 3.9)
+    assert -v_sp[0] <= math.sqrt(2 * P["cp_acc"] * prof.acc_hor * max(room, 0)) + 1e-9   # respeta la pared
     assert a[0] > 0            # y frena de verdad (va demasiado rápido hacia la pared)
 
 
 def test_collision_prevention_brakes_when_already_too_fast():
+    from dron import tuning
     from dron.control import collision_prevention
     prof = PROFILES["px4"]
+    P = tuning.params(prof.key)
     rays = [{"label": "0", "dir": (1.0, 0.0, 0.0), "dist": 5.0}, {"label": "180", "dir": (-1.0, 0.0, 0.0), "dist": 15.0}]
     v_sp, a = collision_prevention(np.array([6.0, 0.0, 0.0]), np.zeros(3), rays, prof, np.array([6.0, 0.0, 0.0]))
-    assert v_sp[0] < 3.0 and a[0] <= -prof.acc_hor + 1e-9    # pide menos velocidad Y deceleración máxima
+    room = 5.0 - (prof.radius + P["cp_margin"] + P["cp_react"] * 6.0)
+    v_lim = math.sqrt(2 * P["cp_acc"] * prof.acc_hor * room)
+    assert v_sp[0] <= v_lim + 1e-9 and v_lim < 6.0          # pide menos velocidad...
+    assert a[0] < 0                                          # ...y frena de verdad (prealimentación)

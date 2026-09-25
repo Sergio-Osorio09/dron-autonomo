@@ -19,21 +19,31 @@ import math
 
 import numpy as np
 
+from . import tuning
 from .params import G, Profile
 
+# valores de fábrica (los de cada dron salen de tuning.params: pueden estar ajustados)
+CP_ACC_FACTOR = tuning.FACTORY["cp_acc"]    # fracción de la aceleración con la que frena Collision Prevention
+CP_MARGIN = tuning.FACTORY["cp_margin"]     # m de seguridad además del radio
+CP_REACTION = tuning.FACTORY["cp_react"]    # s de reacción: la distancia de seguridad crece con la velocidad
 
-CP_ACC_FACTOR = 0.5   # Collision Prevention frena con la mitad de la aceleración (cuenta con el retardo del dron)
-CP_MARGIN = 0.8       # m de seguridad además del radio
-CP_REACTION = 0.3     # s de reacción: la distancia de seguridad crece con la velocidad
+
+def cp_reaction(prof: Profile, P: dict) -> float:
+    """Tiempo de reacción de Collision Prevention: el ajustado, pero nunca menos de lo que tarda la frenada en llegar
+    a su aceleración (rampa limitada por el tirón: a/jerk, la mitad en recorrido). Con 0,1 s y frenando al 90 %,
+    el Matrice (4 m/s², tirón 5 m/s³) se metía en la copa de un árbol persiguiendo a 4 m/s."""
+    return max(P["cp_react"], 0.5 * P["cp_acc"] * prof.acc_hor / prof.jerk)
 
 
 def cp_speed_limit(prof: Profile, reach: float) -> float:
     """Velocidad máxima con la que Collision Prevention deja volar cuando los sensores ven hasta `reach` m: la que
     cumple v = √(2·a·(reach − radio − margen − reacción·v)), con a = CP_ACC_FACTOR · aceleración. El planificador usa
     este mismo límite; si planificara más rápido, el dron se quedaría atrás de la referencia y replanificaría."""
-    a = CP_ACC_FACTOR * prof.acc_hor
-    room = max(reach - prof.radius - CP_MARGIN, 0.5)
-    return -a * CP_REACTION + math.sqrt((a * CP_REACTION) ** 2 + 2 * a * room)
+    P = tuning.params(prof.key)
+    a = P["cp_acc"] * prof.acc_hor
+    room = max(reach - prof.radius - P["cp_margin"], 0.5)
+    react = cp_reaction(prof, P)
+    return -a * react + math.sqrt((a * react) ** 2 + 2 * a * room)
 
 
 class PositionController:
@@ -102,8 +112,10 @@ def collision_prevention(v_sp, a_ref, rays, prof, v_now=None):
     """
     # distancia de seguridad dinámica: margen fijo + lo que recorre durante el tiempo de reacción (0,3 s)
     speed = float(np.linalg.norm(v_now)) if v_now is not None else 0.0
-    d_safe = prof.radius + CP_MARGIN + CP_REACTION * speed
-    acc = CP_ACC_FACTOR * prof.acc_hor  # frenada conservadora: el dron tarda en responder (inercia de actitud y control)
+    P = tuning.params(prof.key)
+    cp_margin, cp_react = P["cp_margin"], cp_reaction(prof, P)
+    d_safe = prof.radius + cp_margin + cp_react * speed
+    acc = P["cp_acc"] * prof.acc_hor  # frenada prudente: el dron tarda en responder (inercia de actitud y control)
     reach = max((r["dist"] for r in rays), default=prof.sensor_range)  # alcance efectivo (menor con lluvia)
     v_cap = math.sqrt(2 * acc * max(reach - d_safe, 0.5))                # poder frenar dentro de lo que se ve
     n = np.linalg.norm(v_sp)
@@ -118,11 +130,12 @@ def collision_prevention(v_sp, a_ref, rays, prof, v_now=None):
             continue
         # el margen por tiempo de reacción solo cuenta con la velocidad HACIA ese obstáculo: si se aleja de un
         # edificio que acaba de pasar, no hay que "huir" de él (antes eso lo empujaba contra la pared de enfrente)
-        safe = own if own is not None else prof.radius + CP_MARGIN + CP_REACTION * max(float(v_now @ u), 0.0)
+        safe = own if own is not None else prof.radius + cp_margin + cp_react * max(float(v_now @ u), 0.0)
         room = r["dist"] - safe
-        active.append((u, room))
+        a_r = r.get("acc", acc)            # un rayo puede pedir su propia frenada (la geovalla: la prudente)
+        active.append((u, room, a_r))
         along = float(v_sp @ u)
-        v_lim = math.sqrt(2 * acc * max(room, 0.0))
+        v_lim = math.sqrt(2 * a_r * max(room, 0.0))
         if room < 0:                      # demasiado cerca: alejarse un poco
             v_lim = -min(1.5, -room * 3.0)
         if along > v_lim:
@@ -131,8 +144,8 @@ def collision_prevention(v_sp, a_ref, rays, prof, v_now=None):
             if a_along > 0:
                 a_ref = a_ref - a_along * u
     # segunda pasada, solo recortando: ningún "alejarse" de un obstáculo puede meterlo en otro
-    for u, room in active:
-        v_lim = math.sqrt(2 * acc * max(room, 0.0))
+    for u, room, a_r in active:
+        v_lim = math.sqrt(2 * a_r * max(room, 0.0))
         along = float(v_sp @ u)
         if along > v_lim:
             v_sp = v_sp - (along - v_lim) * u

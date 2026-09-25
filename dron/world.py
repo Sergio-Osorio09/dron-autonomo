@@ -9,7 +9,13 @@ Terrenos (`TERRAINS`):
   * montañoso   varias montañas de 8-15 m y lomas;
   * precipicios mesetas de 5-10 m con paredes casi verticales (acantilados) y un par de lomas.
 Obstáculos: árboles/arbustos (cilindros) y edificios (cajas; un tercio bajos), con su base en el terreno.
-Densidad (`DENSITIES`): multiplica el número de obstáculos.
+Densidad (`DENSITIES`): multiplica el número de obstáculos ("máxima": un bosque cerrado, casi sin huecos).
+
+Almacén (nivel `almacen`, interior): suelo llano, techo a 10 m, paredes, filas de estanterías de 5-7 m con pasillos
+de 3,6 m (densidad normal) a 2,4 m (máxima), pasillos transversales, pilares hasta el techo y palés en la zona de
+carga. El dron despega en la zona de carga y la meta está al fondo del almacén, en un pasillo o sobre una
+estantería. Sin viento ni lluvia (la simulación los anula). El techo es un obstáculo (`kind="techo"`), no una
+superficie donde posarse.
 
 Metas (`GOAL_KINDS`): la plataforma puede estar en el `suelo`, en la `azotea` de un edificio, en la `cima` del
 terreno, o ser un punto `aire` (solo para el modo carrera). `azar` elige entre las posibles.
@@ -25,9 +31,12 @@ import numpy as np
 LENGTH, WIDTH, CEILING = 90.0, 60.0, 35.0
 DRONE_RADIUS = 0.35
 RAY_RANGE = 12.0
-LEVELS = ("bosque", "ciudad", "mixto")
+LEVELS = ("bosque", "ciudad", "mixto")          # exteriores (los que usan las evaluaciones de siempre)
+ALL_LEVELS = LEVELS + ("almacen",)
 TERRAINS = ("plano", "colinas", "montañoso", "precipicios")
-DENSITIES = {"baja": 0.5, "normal": 1.0, "alta": 1.8, "extrema": 2.8}
+DENSITIES = {"baja": 0.5, "normal": 1.0, "alta": 1.8, "extrema": 2.8, "máxima": 4.0}
+WAREHOUSE_CEILING = 10.0
+AISLES = {"baja": 4.2, "normal": 3.6, "alta": 3.0, "extrema": 2.7, "máxima": 2.4}   # anchura de los pasillos (m)
 GOAL_KINDS = ("suelo", "azotea", "cima", "aire", "azar")
 PAD_HEIGHT = 0.05
 ROVER_HEIGHT = 0.6   # la plataforma va sobre el vehículo
@@ -224,7 +233,7 @@ class World:
     def surface(self, x: float, y: float) -> float:
         s = self.terrain.height(x, y)
         for ob in self.obstacles:
-            if isinstance(ob, Box) and ob.x0 <= x <= ob.x1 and ob.y0 <= y <= ob.y1:
+            if isinstance(ob, Box) and ob.kind != "techo" and ob.x0 <= x <= ob.x1 and ob.y0 <= y <= ob.y1:
                 s = max(s, ob.top)
         return s
 
@@ -347,10 +356,75 @@ def _flat_spot(terrain, rng, avoid=(), min_dist=0.0, far_from=None, tries=400, m
     return None
 
 
+def _make_warehouse(rng, seed, density, goal_kind, race, motion) -> World:
+    """Almacén: estanterías en filas (a lo largo de x) con pasillos, pasillos transversales, pilares y palés."""
+    ter = Terrain("plano", rng)
+    H = WAREHOUSE_CEILING
+    aisle, depth = AISLES[density], 1.2
+    obstacles: List = []
+    t = 0.3   # paredes
+    obstacles += [Box(0, LENGTH, 0, t, H, "pared"), Box(0, LENGTH, WIDTH - t, WIDTH, H, "pared"),
+                  Box(0, t, 0, WIDTH, H, "pared"), Box(LENGTH - t, LENGTH, 0, WIDTH, H, "pared")]
+    x_start, x_end = 16.0, LENGTH - 4.0                  # zona de carga libre en x < 16
+    cross = sorted(rng.sample([x for x in np.arange(x_start + 14, x_end - 8, 2.0)], 2))   # pasillos transversales
+    y = 2.5
+    racks = []
+    while y + depth < WIDTH - 2.5:
+        xs = [x_start] + [c for c in cross] + [x_end]
+        for a, b in zip(xs[:-1], xs[1:]):
+            x0, x1 = a + (0 if a == x_start else 2.0), b - (0 if b == x_end else 2.0)
+            if x1 - x0 > 3:
+                h = round(rng.uniform(5.0, 7.0), 2)
+                racks.append(Box(round(x0, 2), round(x1, 2), round(y, 2), round(y + depth, 2), h, "estantería"))
+        y += depth + aisle
+    obstacles += racks
+    for px in np.arange(x_start + 6, x_end, 12.0):       # pilares en los pasillos transversales y la zona de carga
+        for py in (WIDTH / 2,):
+            c = Cylinder(round(float(px), 2), py, 0.3, H, "pilar", 0.0)
+            if all(q.distance((float(px), py, 1.0)) > 0.8 for q in racks):
+                obstacles.append(c)
+    start = (rng.uniform(4, 9), rng.uniform(8, WIDTH - 8), 0.0)
+    for _ in range(int(6 * DENSITIES[density])):       # palés en la zona de carga
+        x0, y0 = rng.uniform(3, x_start - 3), rng.uniform(2, WIDTH - 4)
+        p = Box(round(x0, 2), round(x0 + 1.2, 2), round(y0, 2), round(y0 + 1.0, 2), round(rng.uniform(0.8, 1.8), 2), "palé")
+        if p.distance((start[0], start[1], 0.5)) > 3.0:
+            obstacles.append(p)
+    # meta: al fondo, en un pasillo (suelo), sobre una estantería (azotea) o en el aire de un pasillo (carrera)
+    aisles_y = [r.y1 + aisle / 2 for r in racks if r.y1 + aisle < WIDTH - 1.5]
+    gy = rng.choice(aisles_y) if aisles_y else WIDTH / 2
+    gx = rng.uniform(x_end - 14, x_end - 3)
+    support = "terreno"
+    if goal_kind == "azotea":
+        far = [r for r in racks if r.x1 > x_end - 16 and r.x1 - r.x0 >= 4]
+        if far:
+            r = rng.choice(far)
+            gx, gy = (r.x0 + r.x1) / 2, (r.y0 + r.y1) / 2
+            support = "azotea"
+        else:
+            goal_kind = "suelo"
+    elif goal_kind in ("cima", "azar"):
+        goal_kind = "suelo"
+    elif goal_kind == "aire" and not race:
+        goal_kind = "suelo"
+    obstacles.append(Box(0, LENGTH, 0, WIDTH, 0.3, "techo", H))
+    world = World(ter, obstacles, start, (0, 0, 0), goal_kind, "almacen", seed, density)
+    if goal_kind == "aire":
+        gz, support = rng.uniform(2.5, 5.0), None
+    else:
+        gz = world.surface(gx, gy) + PAD_HEIGHT
+    world.goal, world.goal_support = (gx, gy, gz), support
+    if race and motion != "fija" and goal_kind == "suelo":
+        from .target import make_motion
+        world.motion = make_motion(world, (gx, gy), motion, seed)
+        world.goal = world.goal_at(0.0)
+        world.goal_support = "vehículo"
+    return world
+
+
 def make_world(level: str = "mixto", seed: Optional[int] = None, goal_kind: str = "suelo", terrain: str = "plano",
                density: str = "normal", race: bool = False, motion: str = "fija") -> World:
     """Genera un mundo reproducible. La salida y la meta quedan libres (radio 4 m)."""
-    if level not in LEVELS:
+    if level not in ALL_LEVELS:
         raise ValueError("Nivel desconocido %r" % level)
     if density not in DENSITIES:
         raise ValueError("Densidad desconocida %r" % density)
@@ -358,6 +432,8 @@ def make_world(level: str = "mixto", seed: Optional[int] = None, goal_kind: str 
         raise ValueError("Tipo de meta desconocido %r" % goal_kind)
     seed = seed if seed is not None else random.randrange(1 << 30)
     rng = random.Random(seed)
+    if level == "almacen":
+        return _make_warehouse(rng, seed, density, goal_kind, race, motion)
     ter = Terrain(terrain, rng)
     kinds = ["suelo", "azotea", "cima"] + (["aire"] if race else [])
     if goal_kind == "azar":

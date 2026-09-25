@@ -38,6 +38,9 @@ CONDITIONS = {
     "carrera, objetivo rápido": dict(mode="carrera", motion="rápido", terrain="colinas", wind_speed=4, gusts=1),
     "carrera, objetivo variable": dict(mode="carrera", motion="variable", terrain="colinas", wind_speed=4, gusts=1),
     "carrera, objetivo que huye (fase 4)": dict(mode="carrera", motion="huye", terrain="colinas", wind_speed=4, gusts=1),
+    "bosque de densidad máxima + viento 4 m/s": dict(level="bosque", density="máxima", wind_speed=4, gusts=1),
+    "almacén (interior, sin GPS)": dict(level="almacen"),
+    "almacén de pasillos estrechos (2,4 m)": dict(level="almacen", density="máxima"),
 }
 
 

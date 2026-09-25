@@ -13,6 +13,11 @@ un mapa de ocupación 3D mientras vuela, planifica sobre él y replanifica cada 
 **perseguir un vehículo que huye** y se esconde tras los edificios, **repartirse la búsqueda entre 2-4 drones**, y
 cada vuelo se puede **repetir, guardar y abrir**. Un banco de pruebas mide todo con intervalos de confianza.
 
+**Mapas densos y ajuste:** vuela dentro de un **almacén** sin GPS (estanterías, pasillos de hasta 2,4 m, techo) con
+odometría visual-inercial, y en un **bosque de densidad máxima**. Sus parámetros de seguridad y velocidad se
+**ajustan automáticamente por dron** en esos mapas (sin redes neuronales), y al replanificar **cose** la trayectoria
+nueva a la que ya seguía, como Fast-Planner y EGO-Planner.
+
 > Arquitectura, fuentes de los datos, lecciones aprendidas y plan de fases: **[docs/CONTEXTO.md](docs/CONTEXTO.md)**
 > Piezas para construir un dron real con esta autonomía (~1000-1100 $): **[docs/HARDWARE.md](docs/HARDWARE.md)**
 
@@ -23,7 +28,7 @@ cada vuelo se puede **repetir, guardar y abrir**. Un banco de pruebas mide todo 
 | Mapa | **Desconocido** (lo construye con sus sensores, fase 2) o **conocido** (fase 1, para comparar) |
 | Misión | **Aterrizar** en la meta o **Carrera** (cruzar la meta sin frenar; se guarda el mejor tiempo) |
 | Dron | Mini 3 (249 g) · genérico PX4 · Matrice 350 RTK |
-| Nivel y densidad | bosque / ciudad / mixto · densidad baja, normal, alta o extrema |
+| Nivel y densidad | bosque / ciudad / mixto / **almacén** (interior, sin GPS) · densidad baja, normal, alta, extrema o máxima |
 | Terreno | plano · colinas · montañoso · precipicios (mesetas con acantilados) |
 | Meta | en el suelo · en una azotea · en una cima · en el aire (carrera) · al azar |
 | Objetivo (carrera) | quieto · en movimiento sobre un vehículo: suave (~1 m/s), medio (~2,5 m/s), rápido (~5 m/s), variable (acelera, frena, se para y gira sin avisar) o **huye y se esconde** (fase 4: sin rastreador, solo lo ve la cámara) |
@@ -63,6 +68,12 @@ cada vuelo se puede **repetir, guardar y abrir**. Un banco de pruebas mide todo 
   que huye, **persiguen en equipo**: comparten cada avistamiento y le cierran las salidas por los lados.
 - **Banco de pruebas y repeticiones (fase 6):** evaluaciones en paralelo, `eval/bench.py` con intervalos de
   confianza de Wilson, y grabación de cada vuelo en el navegador (repetir, guardar en JSON y abrir).
+- **Interior sin GPS:** en el almacén el filtro se alimenta de **odometría visual-inercial** (ruido de 5 cm y
+  deriva del 1 % de lo recorrido, como una Intel T265). El mapa guarda el centroide de los ecos de cada celda para
+  que un pasillo de 2,4 m no se estreche con celdas de 1 m.
+- **Ajuste automático por dron:** `eval/tune.py` busca (al azar y refinando alrededor del mejor) los parámetros de
+  Collision Prevention, márgenes y velocidad que dan más éxito y menos tiempo en mapas densos y con viento, y los
+  valida en semillas nuevas; quedan en `dron/tuning.py` (`DRON_TUNED=0` vuelve a los de fábrica).
 - **Filtro de Kalman** (como el EKF2 de PX4) con puertas de innovación. El dron vuela con lo que *cree*, no con la
   posición real.
 - **Planificación:** A\* sobre un campo de distancias, estirado de cuerda, suavizado y **perfil de velocidad
@@ -101,14 +112,16 @@ ejemplo, entrenando un modelo), la calidad gráfica baja sola para mantener la f
 
 ## Resultados
 
-Tablas completas (mismos mundos para todos) en [eval/resultados.md](eval/resultados.md) (3 drones × 17 escenarios
+Tablas completas (mismos mundos para todos) en [eval/resultados.md](eval/resultados.md) (3 drones × 20 escenarios
 × mapa conocido y desconocido), [eval/resultados_busqueda.md](eval/resultados_busqueda.md) y
 [eval/resultados_enjambre.md](eval/resultados_enjambre.md):
 
-- **48 de 51 combinaciones al 100 % en los dos modos de mapa**: los tres drones en calma y con viento, montaña con
-  meta en la cima, azotea, precipicios, bosque extremo, lluvia fuerte, carreras, **objetivo en movimiento** y
-  **objetivo que huye**. Construir el mapa cuesta un +5 % de tiempo.
-- **Búsqueda:** 53 de 54 casillas al 100 %. Con 60 semillas las tres estrategias tardan lo mismo de media (~24 s);
+- **56 de 60 combinaciones al 100 % en los dos modos de mapa**: los tres drones en calma y con viento, montaña con
+  meta en la cima, azotea, precipicios, bosque de densidad máxima, **almacén sin GPS con pasillos de 2,4 m**, lluvia
+  fuerte, carreras, **objetivo en movimiento** y **objetivo que huye**. Construir el mapa cuesta un +11 % de tiempo.
+- **Ajuste automático:** con los parámetros ajustados cada dron vuela un 8-17 % más rápido en mapas densos y con
+  viento que con los de fábrica, sin añadir choques.
+- **Búsqueda:** 53 de 54 casillas al 100 %, sin choques. Con 60 semillas las tres estrategias tardan lo mismo de media (~24 s);
   la bayesiana es la más regular (en el peor 10 % de los casos, 31 s frente a 40 s del barrido). Con **2 drones**,
   el barrido baja de 30 a 17 s.
 - **Objetivo que huye:** con un dron lo captura el 83 % de las veces (30 semillas) y tarda ~1,5 min; **en equipo,
@@ -127,6 +140,7 @@ python -m pytest -q         # 35 tests
 python eval/eval_headless.py --flights 1 --jobs 10 --md eval/resultados.md     # fases 1, 2 y 4
 python eval/eval_search.py --jobs 10 --md eval/resultados_busqueda.md          # fase 3
 python eval/bench.py --n 30 profile=px4 search=bayesiana                       # banco de pruebas
+python eval/tune.py --profile matrice --out eval/ajuste_matrice.json           # ajuste automático (~1 h)
 ```
 
 ## Estructura
@@ -134,10 +148,10 @@ python eval/bench.py --n 30 profile=px4 search=bayesiana                       #
 ```
 dron-autonomo/
 ├── CLAUDE.md, docs/CONTEXTO.md     guía para agentes y contexto completo
-├── dron/                           params, world (terreno), target (objetivo móvil), dynamics, wind, sensors, estimator,
-│                                   mapping (mapa que construye el dron), search (búsqueda), planning, control,
-│                                   mission, sim, swarm (enjambre)
-├── eval/                           eval_headless.py, eval_search.py, bench.py y resultados
+├── dron/                           params, world (terreno y almacén), target (objetivo móvil), dynamics, wind, sensors,
+│                                   estimator, mapping (mapa que construye el dron), search (búsqueda), planning,
+│                                   control, tuning (parámetros por dron), mission, sim, swarm (enjambre)
+├── eval/                           eval_headless.py, eval_search.py, bench.py, tune.py y resultados
 ├── tests/                          física, viento, filtro, planificación, mapa, búsqueda, evasión, enjambre y misión
 ├── server.py                       servidor local (puerto 7873)
 └── ui/                             index.html, style.css, app.js (three.js)

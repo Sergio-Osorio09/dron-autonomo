@@ -30,9 +30,10 @@ from .mapping import OccupancyMap
 from .mission import GATE_RADIUS, PAD_RADIUS, Mission
 from .params import PROFILES
 from .planning import ClearanceGrid, astar, MARGIN
+from . import tuning
 from .search import SEARCH_MODES, Searcher, make_area
 from .target import EvaderMotion
-from .sensors import NOISE_LEVELS, RAIN, Sensors, clearance_below, depth_sectors
+from .sensors import NOISE_LEVELS, RAIN, VIO_SIGMA, Sensors, clearance_below, depth_sectors
 from .wind import Wind
 from .world import CEILING, LENGTH, WIDTH, make_world
 
@@ -79,6 +80,8 @@ class Simulation:
             raise ValueError("Nivel de ruido desconocido %r" % noise)
         if rain not in RAIN:
             raise ValueError("Lluvia desconocida %r" % rain)
+        if level == "almacen":   # interior: ni viento ni lluvia
+            wind_speed, gusts, rain, terrain = 0.0, 0, "no", "plano"
         self.prof = PROFILES[profile]
         shared = shared or {}
         self.id = shared.get("id", 0)
@@ -93,7 +96,7 @@ class Simulation:
                        "collision_prevention": collision_prevention, "terrain": terrain, "density": density,
                        "goal_kind": self.world.goal_kind, "mode": mode, "rain": rain,
                        "motion": self.world.motion.kind if self.world.motion else "fija", "map_mode": map_mode,
-                       "search": search}
+                       "search": search, "localization": "vio" if self.world.level == "almacen" else "gps"}
         self.mode = mode
         self.collision_prevention = collision_prevention
         yaw = random.Random(seed + 101 * self.id).uniform(-math.pi, math.pi)
@@ -101,7 +104,11 @@ class Simulation:
         self.drone.drag_mult = RAIN[rain]["drag"]
         self.wind = Wind(wind_speed, wind_dir, gusts, seed, self.world)
         self.sensors = Sensors(self.prof, noise, seed + 1 + 1000 * self.id, rain)
-        self.est = Estimator(self.drone.p.copy(), self.prof.gps_sigma, NOISE_LEVELS[noise])
+        # en interior no hay GPS: odometría visual-inercial (VIO), precisa a corto plazo y con deriva
+        self.localization = "vio" if self.world.level == "almacen" else "gps"
+        self.sensors.vio = self.localization == "vio"
+        self.est = Estimator(self.drone.p.copy(), VIO_SIGMA if self.sensors.vio else self.prof.gps_sigma,
+                             NOISE_LEVELS[noise])
         self.ctrl = PositionController(self.prof)
         self.map = OccupancyMap() if map_mode == "desconocido" else None
         # la cámara de profundidad construye el mapa (fase 2) y alimenta Collision Prevention (en los dos modos)
@@ -245,7 +252,9 @@ class Simulation:
         if self.collision_prevention:
             # geovalla (como Geofence de PX4): los bordes de la arena son paredes virtuales que los telémetros no ven
             ex, ey = est.p[0], est.p[1]
-            fence = [{"label": "geovalla", "dir": dv, "dist": dd} for dv, dd in (
+            # con su propia distancia de seguridad, fija y prudente (no la ajustada: es un límite, no algo que afinar)
+            fence = [{"label": "geovalla", "dir": dv, "dist": dd, "d_safe": self.prof.radius + 1.0,
+                      "acc": tuning.FACTORY["cp_acc"] * self.prof.acc_hor} for dv, dd in (
                 ((1.0, 0.0, 0.0), LENGTH - ex), ((-1.0, 0.0, 0.0), ex), ((0.0, 1.0, 0.0), WIDTH - ey), ((0.0, -1.0, 0.0), ey))
                 if dd < self.sensors.range]
             rays = self.sensors.last_rays + fence

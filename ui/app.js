@@ -16,7 +16,7 @@ const PHASES = { "en tierra": "En tierra", despegue: "Despegue", crucero: "Cruce
 const LABELS = {
   mode: { aterrizar: "Aterrizar en la meta", carrera: "Carrera (llegar el primero)" },
   terrain: { plano: "Plano", colinas: "Colinas", "montañoso": "Montañoso", precipicios: "Precipicios" },
-  density: { baja: "Baja", normal: "Normal", alta: "Alta", extrema: "Extrema" },
+  density: { baja: "Baja", normal: "Normal", alta: "Alta", extrema: "Extrema", "máxima": "Máxima (cerrado)" },
   goal: { suelo: "En el suelo", azotea: "En una azotea", cima: "En una cima", aire: "En el aire (carrera)", azar: "Al azar" },
   rain: { no: "Sin lluvia", moderada: "Moderada", fuerte: "Fuerte" },
   motion: { fija: "Quieto", suave: "En movimiento: suave", medio: "En movimiento: medio", "rápido": "En movimiento: rápido",
@@ -25,7 +25,7 @@ const LABELS = {
   search: { no: "No: sabe dónde está la meta", barrido: "Buscarla: barrido (cortacésped)",
     fronteras: "Buscarla: fronteras (FUEL)", bayesiana: "Buscarla: bayesiana" },
 };
-const LEVEL_LABEL = { bosque: "Bosque", ciudad: "Ciudad", mixto: "Mixto" };
+const LEVEL_LABEL = { bosque: "Bosque", ciudad: "Ciudad", mixto: "Mixto", almacen: "Almacén (interior)" };
 const NOISE_LABEL = { ideal: "Ideales (sin ruido)", realista: "Realistas", alto: "Ruido alto" };
 
 let options = null, frame = null, world = null, profile = null, playing = false, busy = false;
@@ -204,7 +204,7 @@ function buildWorld(w) {
   for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
     const k = i * ny + j, z = T.h[i][j];
     verts.set([i * T.res, z, -j * T.res], k * 3);
-    col.set(terrainColor(z, maxZ), k * 3);
+    col.set(w.level === "almacen" ? [0.32, 0.34, 0.36] : terrainColor(z, maxZ), k * 3);   // almacén: hormigón
   }
   const idx = [];
   for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny - 1; j++) {
@@ -240,10 +240,17 @@ function buildWorld(w) {
   worldGroup.add(edges);
   for (const o of w.obstacles) {
     let mesh;
+    if (o.kind === "techo") continue;   // el techo del almacén no se dibuja: así se ve desde arriba
     if (o.type === "cylinder") {
-      const color = new THREE.Color(o.kind === "tree" ? "#2f7d4a" : "#6aa84f").offsetHSL((Math.random() - 0.5) * 0.04, 0, (Math.random() - 0.5) * 0.08);
+      const color = new THREE.Color(o.kind === "tree" ? "#2f7d4a" : o.kind === "pilar" ? "#94a3b8" : "#6aa84f").offsetHSL((Math.random() - 0.5) * 0.04, 0, (Math.random() - 0.5) * 0.08);
       mesh = new THREE.Mesh(new THREE.CylinderGeometry(o.r, o.r, o.h, 18), new THREE.MeshStandardMaterial({ color, roughness: 0.85 }));
       mesh.position.copy(V([o.x, o.y, o.base + o.h / 2]));
+    } else if (["pared", "estantería", "palé"].includes(o.kind)) {   // almacén
+      const w3 = o.x1 - o.x0, d3 = o.y1 - o.y0;
+      const look = { pared: ["#64748b", 0.18], "estantería": ["#2563eb", 1], "palé": ["#a16207", 1] }[o.kind];
+      mesh = new THREE.Mesh(new THREE.BoxGeometry(w3, o.h, d3), new THREE.MeshStandardMaterial({ color: look[0],
+        roughness: 0.6, metalness: 0.3, transparent: look[1] < 1, opacity: look[1], depthWrite: look[1] === 1 }));
+      mesh.position.copy(V([(o.x0 + o.x1) / 2, (o.y0 + o.y1) / 2, o.base + o.h / 2]));
     } else {
       const low = o.kind === "low", w3 = o.x1 - o.x0, d3 = o.y1 - o.y0;
       const tex = low ? null : windowTexture("#40566b");
@@ -770,7 +777,7 @@ function drawPanel(f) {
   $("h-bat").textContent = f.battery.toFixed(1) + " %";
   $("phase-pill").textContent = f.blocked ? "Buscando camino" : PHASES[f.phase] || f.phase;
   const unknown = f.map_mode === "desconocido";
-  $("k-map").textContent = unknown ? "lo construye" : "conocido";
+  $("k-map").textContent = (unknown ? "lo construye" : "conocido") + (locMode === "vio" ? " · VIO, sin GPS" : "");
   $("k-explored").textContent = unknown ? fmt(100 * f.explored, 0, " %") : "—";
   $("k-mapreplan").textContent = unknown ? f.map_replans : "—";
   $("k-dist").textContent = fmt(f.distance, 0, " m");
@@ -907,7 +914,9 @@ function config() {
 }
 // --- repeticiones (fase 6): cada vuelo se graba entero en el navegador; se puede repetir, guardar y abrir
 let recorded = [], replay = null;
+let locMode = "gps";   // localización: GPS (exterior) o VIO (almacén)
 function loadFlight(f) {   // prepara la escena con el primer fotograma (completo) de un vuelo
+  locMode = f.config.localization || "gps";
   showProfile(f.profile);
   frame = f;
   windField = f.wind_field;

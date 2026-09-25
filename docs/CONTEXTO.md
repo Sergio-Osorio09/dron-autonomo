@@ -14,12 +14,13 @@ sensores con ruido → estimación (Kalman) → [mapa] → misión → planifica
 |---|---|---|---|
 | Parámetros | `dron/params.py` | Perfiles con datos de fabricante | Fichas de DJI Mini 3 y Matrice 350 RTK; parámetros por defecto de PX4 |
 | Física | `dron/dynamics.py` | Masa puntual con actitud; arrastre deducido de v_max; inercia de motores y actitud | Modelo de simuladores de planificación (FAST Lab, Flightmare) |
-| Mundo | `dron/world.py` | Terreno con relieve (mapa de alturas), obstáculos apoyados en él, densidad, meta en suelo/azotea/cima/aire | — |
+| Mundo | `dron/world.py` | Terreno con relieve (mapa de alturas), obstáculos apoyados en él, densidad (hasta "máxima"), meta en suelo/azotea/cima/aire; **almacén** interior con estanterías, pasillos de 2,4-4,2 m, pilares, palés, paredes y techo | — |
 | Viento | `dron/wind.py` | Medio + cizalladura logarítmica + turbulencia **Dryden** + estelas de abrigo tras obstáculos y relieve, aceleración sobre azoteas y cimas | MIL-F-8785C / MIL-HDBK-1797; modelos de estela simplificados (no CFD) |
 | Sensores | `dron/sensors.py` | IMU, GPS con deriva, barómetro, brújula, 40 telémetros, cámara inferior y **cámaras de profundidad** frontal (24 × 14 rayos) e inferior (16 × 12); la lluvia degrada alcance y precisión | Ruidos tipo EKF2 de PX4; campo de visión de la Intel RealSense D435 |
 | Mapa (fase 2) | `dron/mapping.py` | **Mapa de ocupación 3D con log-odds** (vóxeles de 1 m) construido desde la posición estimada; suposición 2,5D; **ESDF** con transformada de distancia exacta; lo desconocido es libre para planificar | OctoMap (parámetros de octomap_server), Voxblox/FIESTA, Fast-Planner/EGO-Planner |
-| Estimación | `dron/estimator.py` | Filtro de Kalman de 9 estados con puertas de innovación | EKF2 de PX4 |
-| Planificación | `dron/planning.py` | Campo de distancias + **A\*** + estirado de cuerda + Chaikin + perfil de velocidad óptimo en tiempo; funciona igual con el mundo conocido o con el mapa aprendido | Voxblox/FIESTA (ESDF), Theta*, TOPP |
+| Estimación | `dron/estimator.py` | Filtro de Kalman de 9 estados con puertas de innovación; en interior se alimenta de **odometría visual-inercial (VIO)** en lugar de GPS | EKF2 de PX4; Intel T265 / VINS-Mono |
+| Ajuste | `dron/tuning.py`, `eval/tune.py` | Parámetros de seguridad y velocidad **por dron**, ajustados automáticamente (búsqueda aleatoria + refinamiento, validados en semillas nuevas) | Ajuste por aparato de PX4 |
+| Planificación | `dron/planning.py` | Campo de distancias + **A\*** + estirado de cuerda + Chaikin + perfil de velocidad óptimo en tiempo; al replanificar **cose** la trayectoria nueva a la actual; funciona igual con el mundo conocido o con el mapa aprendido | Voxblox/FIESTA (ESDF), Theta*, TOPP, Fast-Planner/EGO-Planner |
 | Control | `dron/control.py` | Cascada posición → velocidad (PID) → aceleración → inclinación y empuje; **Collision Prevention** con telémetros, cámara frontal en 72 sectores y visión inferior | `mc_pos_control` y CollisionPrevention de PX4 |
 | Objetivo móvil | `dron/target.py` | Vehículo que recorre el terreno (suave, medio, rápido, variable) o que **huye** del dron y se esconde (fase 4); **filtro de Kalman de velocidad constante** para seguirlo; **punto de intercepción** | Seguimiento de blancos y guiado con adelanto (lead pursuit); persecución-evasión |
 | Búsqueda | `dron/search.py` | (fase 3) Zona de búsqueda, cámara de detección con cono, oclusión y falsas alarmas; **creencia bayesiana** en rejilla; estrategias **barrido** (boustrophedon), **fronteras** (FUEL) y **bayesiana**; confirmación de detecciones. (fase 4) Creencia de un blanco móvil que se difunde. (fase 5) Reparto por **Voronoi** + subasta voraz | Teoría de búsqueda de Koopman, IAMSAR; FUEL (Zhou et al. 2021); Cortés et al. 2004 |
@@ -51,6 +52,9 @@ Todos están en `dron/params.py`, con fuente:
   inclinada 60° hacia abajo; detector con entrada de 640 px (la estándar de YOLO). **Estimado:** la curva de
   detección (32 px fiable, 12 px nada, 0,9 como máximo), el 1 % de falsas alarmas por imagen, la altura de búsqueda
   (8 m), el vehículo que huye (5 m/s, 3 m/s², alerta a 30 m) y la separación entre capas del enjambre (2 m).
+- **Interior (almacén)**: sin GPS; odometría visual-inercial con ruido de 5 cm y 0,05 m/s y deriva del 1 % de la
+  distancia recorrida (**estimado**: la Intel T265 anunciaba < 1 % en bucle cerrado). Techo a 10 m, estanterías
+  de 5-7 m y 1,2 m de fondo (**estimado**, del orden de las estanterías de palés habituales).
 - El **arrastre** no se inventa: a velocidad máxima con la inclinación máxima, el empuje horizontal iguala al
   arrastre, así que `k = g·tan(inclinación) / v_max²`. Un test comprueba que cada perfil alcanza su v_max real.
 
@@ -213,20 +217,70 @@ Todos están en `dron/params.py`, con fuente:
     40/40; persecución en equipo (2 drones, ciudad) 39/40; con 4 drones (el máximo), búsqueda en ciudad 30/30 y
     persecución 30/30. Ningún choque.
 
+## 3e. Lecciones de los mapas densos, el ajuste y el planificador
+
+1. **Sin GPS dentro, y con GPS el mapa no sirve.** Construido con la posición del GPS (±0,5-1 m), un pasillo de 3,6 m
+   se "emborronaba" y el dron no cabía. En interior, los drones reales usan odometría visual-inercial (precisa a
+   corto plazo, con deriva); en el almacén el error baja a 0,1-0,4 m y la plataforma se corrige con la cámara.
+2. **La suposición 2,5D rellenaba el almacén entero.** "Debajo de lo ocupado, sólido" es cierto fuera (no hay
+   voladizos), pero al ver el techo se rellenaba todo hasta el suelo, incluido el aire donde vuela el dron. Ahora
+   solo se rellena debajo de lo visto con rayos horizontales o que bajan; lo visto con rayos que suben (aunque sea
+   3°: el Matrice ve el techo a 40 m con rayos casi horizontales) no dice nada de lo que tiene debajo. La altura
+   mínima de crucero tampoco cuenta ya el techo como "superficie" (lo empujaba hacia arriba, contra él).
+3. **Celdas de 1 m y pasillos de 3,6 m no encajan.** Con la holgura de peor caso (distancia a la celda ocupada −
+   media celda), el centro del pasillo tenía 0,5 m y el dron no cabía en su propio mapa. Ahora cada celda guarda el
+   centroide de sus ecos y la holgura se mide hasta él (como las distancias por debajo de la celda de Voxblox):
+   ~1,1-1,3 m en el pasillo, sin pasar a celdas de 0,5 m (que costarían ~8 veces más).
+4. **Coser las trayectorias al replanificar** (Fast-Planner / EGO-Planner): con mapa desconocido, los choques de la
+   evaluación bajan de 2 a 0 y el tiempo un 14 %; almacén estrecho (PX4, 30 semillas) del 77 % al 80 % y el p90 de
+   93 a 69 s. Antes, cada trayectoria nueva salía de la posición actual en la dirección del camino nuevo y, con la
+   inercia, el dron se desviaba, se quedaba atrás y volvía a replanificar.
+5. **Velocidad inicial en la dirección del camino nuevo.** Al replanificar se usaba la rapidez actual aunque el
+   camino nuevo fuera hacia atrás: la referencia pedía −6 m/s mientras el dron iba a +7 y se pasaba de largo (un
+   Matrice rozó un edificio yendo a confirmar una detección). Ahora la velocidad inicial es la componente de la
+   actual en esa dirección: si hay que dar media vuelta, empieza frenando.
+6. **Ajuste automático de parámetros, POR DRON.** Un único ajuste con el Mini y el PX4 (−15 % de tiempo en
+   validación) hizo chocar al Matrice, que no estaba en el ajuste: más pesado, a 17 m/s no frenaba a tiempo. Como
+   en PX4, cada dron tiene sus parámetros (`dron/tuning.py`), ajustados en mapas densos y con viento de 8 m/s y
+   validados en 60 vuelos con semillas nuevas: Mini −15 %, PX4 −8 %, Matrice −17 % de tiempo, sin perder éxito ni
+   añadir choques. Lo que aprende: frenar más fuerte (90 % de la aceleración en vez del 50 %), menos margen de
+   reacción y de seguridad, más velocidad de crucero. Con margen de planificación ≥ 0,72 m, en cambio, chocaba más:
+   en pasillos estrechos se quedaba sin camino.
+7. **Lo que el ajuste no vio, hay que protegerlo aparte.** Regresiones en escenarios que no estaban en el ajuste,
+   halladas con el banco de pruebas (40 semillas): (a) buscando, el Matrice iba a 17 m/s a los puntos de búsqueda;
+   ahora la búsqueda vuela a la velocidad de crucero de fábrica (el detector necesita tiempo para ver);
+   (b) persiguiendo, choques contra el borde (3 de 40 en carrera rápida del Matrice): la geovalla usa ahora una
+   distancia de seguridad fija (radio + 1 m) y frena con la aceleración de fábrica, no con la ajustada, y la
+   referencia del reintento se recorta dentro de la arena; (c) un Matrice persiguiendo a 4 m/s se metió en un
+   árbol: con 0,1 s de reacción y frenando al 90 %, no contaba con lo que tarda la frenada en llegar a esa
+   aceleración (la rampa del tirón, a/jerk). Ahora el tiempo de reacción de Collision Prevention nunca baja de
+   ½·a/jerk (0,36 s en el Matrice ajustado; los de fábrica no cambian). Con eso: carrera rápida del Matrice 36/40 →
+   40/40 y persecución en equipo con 2 PX4 38/40 → 40/40, sin choques.
+8. **Qué queda de "entrenar" sin red neuronal.** Todo lo anterior es ajuste de parámetros medido, no aprendizaje:
+   el dron no mejora con la experiencia de vuelo, se eligen mejores parámetros en simulación y se validan en
+   semillas nuevas. Es lo que se hace con los drones reales (ajuste por aparato en PX4); una red neuronal se deja
+   para más adelante (lección 3d y sección 6).
+
 ## 4. Resultados
 
-Ver `eval/resultados.md` (3 drones × 17 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera y
-objetivo en movimiento o que huye; cada uno con mapa conocido y desconocido).
+Ver `eval/resultados.md` (3 drones × 20 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera,
+objetivo en movimiento o que huye, bosque de densidad máxima y almacén normal y estrecho; cada uno con mapa conocido y
+desconocido). Con los parámetros ajustados por dron y las trayectorias cosidas (25-09-2026):
 
-- **48 de 51 combinaciones al 100 % en los dos modos de mapa** (17 escenarios con el del objetivo que huye). Falla el
-  PX4 con viento de 10 m/s (su límite) y, alguna vez, una persecución del vehículo que huye (3 vuelos por casilla
-  son pocos para ese escenario: ver el banco de pruebas).
-- **Coste de no conocer el mundo:** en las 46 combinaciones de las fases 1-2 que los dos modos completan al 100 %, el
-  tiempo medio pasa de 21,3 s a 22,4 s (+5 %).
+- **56 de 60 combinaciones al 100 % en los dos modos de mapa**, incluidos los 9 escenarios densos nuevos (bosque de
+  densidad máxima, almacén y almacén de pasillos de 2,4 m, los tres drones). Falla el PX4 con viento de 10 m/s (su
+  límite: aterriza fuera o, con ráfagas fuertes, choca) y, alguna vez, la persecución del vehículo que huye (sin
+  choques; 3 vuelos por casilla son pocos para ese escenario: ver el banco de pruebas).
+- **Tiempo medio** en las 56 combinaciones: 22,1 s con mapa conocido y 24,5 s con mapa desconocido (+11 %: en el
+  almacén estrecho, sin conocerlo, replanifica ~70 veces). Replanificaciones por vuelo: 3,8 y 10,3.
+- **Ajuste por dron frente a fábrica** (validación en 60 vuelos con semillas nuevas en mapas densos y con viento):
+  Mini 28,9 → 24,7 s, PX4 36,7 → 33,7 s, Matrice 27,4 → 22,7 s, sin perder éxito ni añadir choques. Banco de
+  robustez de 40 semillas tras las correcciones de la lección 3e.7: carrera rápida del Matrice en precipicios con
+  mapa desconocido 40/40 y persecución en equipo con 2 PX4 40/40, sin choques.
 - **Objetivo que huye (fase 4):** con 30 semillas (PX4, mixto, `eval/bench.py`): 83 % de capturas con un dron, con
   una mediana de 103 s (lo pierde y lo vuelve a buscar varias veces).
-- **Búsqueda (fase 3, `eval/resultados_busqueda.md`):** 53 de 54 casillas al 100 % (la otra aterrizó a 0,8 m, fuera de
-  la plataforma de 0,75 m, con ráfagas). 1,3-2 falsas alarmas por vuelo, todas descartadas. En esa tabla la
+- **Búsqueda (fase 3, `eval/resultados_busqueda.md`):** 53 de 54 casillas al 100 %, sin choques (en la otra, un
+  Matrice con lluvia no encontró la meta a tiempo en 1 de 3 vuelos). 1,3-2 falsas alarmas por vuelo, todas descartadas. En esa tabla la
   bayesiana parece la más rápida (30 s frente a 40 y 43 s), pero son siempre los mismos 3 mundos por casilla: **con
   60 semillas (`eval/bench.py`, PX4, mixto, colinas) las tres tardan lo mismo de media** (~24 s ± 3-6 s) y la
   diferencia está en el peor caso: percentil 90 de 31 s la bayesiana, 33 s fronteras y 40 s el barrido. Tampoco
@@ -255,8 +309,9 @@ objetivo en movimiento o que huye; cada uno con mapa conocido y desconocido).
 
 ## 6. Estado actual y cómo continuar (para un chat nuevo)
 
-**Estado:** fases 1 a 6 terminadas (de la 2 faltan las B-splines; de la 6, el puente a PX4 SITL). 35 tests en
-verde. Resultados en la sección 4. Repositorio privado: https://github.com/Sergio-Osorio09/dron-autonomo (`main`).
+**Estado:** fases 1 a 6 terminadas (de la 2 faltan las B-splines; de la 6, el puente a PX4 SITL). Después, mapas
+densos (bosque de densidad máxima, almacén interior sin GPS con VIO), trayectorias cosidas al replanificar y ajuste
+automático de parámetros por dron (lección 3e). 35 tests en verde. Resultados en la sección 4. Repositorio privado: https://github.com/Sergio-Osorio09/dron-autonomo (`main`).
 Comandos en `CLAUDE.md` (tests, servidor, las tres evaluaciones con `--jobs` y el banco de pruebas).
 
 **Cómo funcionan las fases 3-6** (detalle en los docstrings de `search.py`, `target.py` y `swarm.py`):
@@ -284,6 +339,12 @@ Comandos en `CLAUDE.md` (tests, servidor, las tres evaluaciones con `--jobs` y e
   el viento y la evaluación también: son "la realidad".
 
 **Pendientes** (opcionales):
+- Tomas cinematográficas (Reveal, paralaje, Pedestal, Dronie, órbita): pedidas por el usuario, aplazadas. Serían
+  trayectorias de cámara definidas respecto a un sujeto, con el planificador y Collision Prevention de siempre.
+- Red neuronal: aplazada por decisión del usuario. Si se hace, como experimento aparte y comparado en el banco de
+  pruebas con lo clásico (por ejemplo, una política que elija la velocidad de crucero, entrenada por imitación).
+- Almacén: con mapa desconocido y pasillos de 2,4 m replanifica ~70 veces por vuelo y tarda +10 % (celdas de 1 m;
+  celdas de 0,5 m solo en interior costarían ~8× el ESDF).
 - Fase 2: trayectorias B-spline de verdad al estilo EGO-Planner. Hay una versión sencilla (`DRON_SMOOTHER=bspline`)
   que no mejora a Chaikin (lección 3d.13); le faltan la factibilidad dinámica y el reparto de tiempos.
 - Fase 6: puente a PX4 SITL + Gazebo (enviar las referencias p/v/a por MAVSDK en modo offboard y leer el estado de

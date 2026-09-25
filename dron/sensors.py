@@ -5,6 +5,10 @@
     GPS posición        10 Hz        ruido σ del perfil (Mini ±0,75 m, PX4 0,5 m, RTK 0,1 m) + deriva lenta
                                      (Gauss-Markov, τ = 30 s); en vertical, 1,5 veces más
     GPS velocidad       10 Hz        ruido 0,1 m/s
+    VIO (interior)      10 Hz        en el almacén no hay GPS: odometría visual-inercial (como la Intel T265 o
+                                     VINS-Mono): ruido de 5 cm y 0,05 m/s, pero con una DERIVA que crece con la
+                                     distancia recorrida (1 % en una dirección al azar por vuelo + paseo aleatorio).
+                                     ESTIMADO: la T265 anunciaba < 1 % de deriva en bucle cerrado.
     barómetro           20 Hz        ruido 0,3 m + deriva lenta (τ = 60 s)
     brújula (rumbo)     20 Hz        ruido 2°
     telémetros          20 Hz        40 rayos (36 en anillo cada 10°, arriba, abajo, 2 al frente); ruido 2 % + 2 cm;
@@ -37,6 +41,7 @@ import numpy as np
 from .search import CAM_HALF_FOV, DET_HZ, FALSE_ALARM, cam_axis, in_cone, p_detect
 
 NOISE_LEVELS = {"ideal": 0.0, "realista": 1.0, "alto": 2.0}
+VIO_SIGMA, VIO_VEL, VIO_DRIFT = 0.05, 0.05, 0.01   # odometría visual-inercial (interior): ruido y deriva (ESTIMADO)
 RAIN = {"no": dict(range=1.0, noise=1.0, drop=0.0, gps=1.0, cam=5.0, drag=1.0),
         "moderada": dict(range=0.7, noise=1.5, drop=0.05, gps=1.2, cam=4.0, drag=1.08),
         "fuerte": dict(range=0.5, noise=2.0, drop=0.12, gps=1.4, cam=3.0, drag=1.15)}
@@ -148,6 +153,10 @@ class Sensors:
         self.t = 0.0
         self.next = {"gps": 0.0, "baro": 0.0, "rng": 0.0, "depth": 0.0, "det": 0.0}
         self.detect_on = False  # cámara de detección: solo en la misión de búsqueda (fase 3)
+        self.vio = False        # interior: odometría visual-inercial en lugar de GPS
+        self.vio_drift = np.zeros(3)
+        self._vio_dir = None
+        self._vio_last = None
         self.np_rng = np.random.default_rng(seed)
         self.last_gps: Optional[np.ndarray] = None
         self.last_rays: List[Dict] = []
@@ -169,10 +178,15 @@ class Sensors:
         bdrift = self.baro_drift.step(dt)[0]
         if t >= self.next["gps"]:
             self.next["gps"] = t + 0.1
-            s = self.prof.gps_sigma * self.rain["gps"]
-            gp = p + drift * np.array([1, 1, 1.5]) + np.array([self._n(s), self._n(s), self._n(1.5 * s)])
-            out["gps_pos"] = gp
-            out["gps_vel"] = v + np.array([self._n(0.1) for _ in range(3)])
+            if self.vio:
+                gp = self._vio(p)
+                out["gps_pos"] = gp
+                out["gps_vel"] = v + np.array([self._n(VIO_VEL) for _ in range(3)])
+            else:
+                s = self.prof.gps_sigma * self.rain["gps"]
+                gp = p + drift * np.array([1, 1, 1.5]) + np.array([self._n(s), self._n(s), self._n(1.5 * s)])
+                out["gps_pos"] = gp
+                out["gps_vel"] = v + np.array([self._n(0.1) for _ in range(3)])
             self.last_gps = gp
         if t >= self.next["baro"]:
             self.next["baro"] = t + 0.05
@@ -206,6 +220,19 @@ class Sensors:
             self.next["det"] = t + 1.0 / DET_HZ
             out["detect"] = self.detect(p, yaw, world)
         return out
+
+    def _vio(self, p):
+        """Posición de la odometría visual-inercial: precisa a corto plazo, con deriva proporcional a lo recorrido."""
+        if self._vio_dir is None:
+            a = self.rng.uniform(-math.pi, math.pi)
+            self._vio_dir = np.array([math.cos(a), math.sin(a), 0.2 * self.rng.uniform(-1, 1)])
+            self._vio_last = p.copy()
+        ds = float(np.linalg.norm(p - self._vio_last))
+        self._vio_last = p.copy()
+        k = VIO_DRIFT * self.m
+        self.vio_drift = self.vio_drift + self._vio_dir * k * ds + np.array([self._n(0.3 * VIO_DRIFT * ds)
+                                                                               for _ in range(3)])
+        return p + self.vio_drift + np.array([self._n(VIO_SIGMA) for _ in range(3)])
 
     def detect_vehicle(self, p, yaw, world, target, aim=None):
         """(fase 4) Cámara de detección en un GIMBAL que sigue al vehículo, como el ActiveTrack de DJI: apunta a donde

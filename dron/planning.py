@@ -19,7 +19,10 @@
      * pasada hacia delante (acelerar como mucho a_max) y hacia atrás (frenar a tiempo): así va rápido en las
        rectas y frena justo antes de las curvas y del final (en modo carrera NO frena al final: cruza la meta);
      * suavizado del perfil para aproximar el límite de tirón (jerk);
-     * al REPLANIFICAR en vuelo, la trayectoria nueva arranca a la velocidad actual (si no, frenaría cada vez).
+     * al REPLANIFICAR en vuelo, la trayectoria nueva arranca a la velocidad actual (si no, frenaría cada vez);
+     * y, si se le da un `prefix` (el tramo inmediato de la trayectoria actual), se COSE a él como en Fast-Planner
+       y EGO-Planner: se conserva ese tramo, se planifica desde su final y el suavizado incluye el punto anterior,
+       así la curva nueva sale en la dirección que ya lleva el dron, sin saltos.
    El resultado es una referencia p(t), v(t), a(t) que el control sigue con prealimentación.
 
 Todo funciona igual con el mundo conocido (fase 1: `ClearanceGrid(world)` + `world.clearance`) que con el mapa
@@ -344,20 +347,24 @@ def bspline_smooth(grid, pts, need: float, iters: int = 40):
 
 
 def plan(world, grid, prof: Profile, start, goal, v_cruise: Optional[float] = None,
-         end_speed: float = 0.0, margin: float = MARGIN, start_speed: float = 0.0):
+         end_speed: float = 0.0, margin: float = MARGIN, start_speed: float = 0.0, prefix=None,
+         min_margin: float = MARGIN, start_vel=None):
     """Trayectoria de start a goal (puntos 3D) o None si no hay camino. end_speed > 0: cruza el final sin frenar.
 
     `world` es el espacio contra el que se comprueban los segmentos (el mundo real o el mapa aprendido) y `grid`
     la rejilla de holgura para A*.
 
     `margin` es la holgura de seguridad deseada; si con ella no hay camino, se prueba con márgenes menores
-    (hasta el mínimo MARGIN). Así, con un GPS malo, el dron deja más espacio a los obstáculos cuando se puede.
+    (hasta `min_margin`, MARGIN de fábrica o el ajustado del dron). Así, con un GPS malo, el dron deja más espacio
+    a los obstáculos cuando se puede.
     """
     # la meta nunca fuera de la arena (p. ej. un objetivo que huye extrapolado por el filtro más allá del borde:
     # el dron lo perseguía hasta rozar la geovalla)
     goal = np.array([min(max(goal[0], 2.0), LENGTH - 2.0), min(max(goal[1], 2.0), WIDTH - 2.0), goal[2]], float)
-    cells, need = None, prof.radius + MARGIN
-    for m in sorted({margin, (margin + MARGIN) / 2, MARGIN}, reverse=True):
+    if prefix is not None:
+        start = prefix[-1]
+    cells, need = None, prof.radius + min_margin
+    for m in sorted({margin, (margin + min_margin) / 2, min_margin}, reverse=True):
         need = prof.radius + m
         cells = astar(grid, start, goal, need)
         if cells is not None:
@@ -366,13 +373,23 @@ def plan(world, grid, prof: Profile, start, goal, v_cruise: Optional[float] = No
         return None
     pts = [np.array(start, float)] + [grid.center(c) for c in cells[1:-1]] + [np.array(goal, float)]
     pts = string_pull(world, pts, need)
+    if prefix is not None:   # cosido: el suavizado ve la dirección con la que llega el dron
+        pts = [np.asarray(prefix[-2], float)] + pts
     smooth = bspline_smooth(grid, pts, need) if SMOOTHER == "bspline" else None
     if smooth is not None and all(segment_clear(world, a, b, need, 0.5) for a, b in zip(smooth, smooth[1:])):
         pts = smooth
     else:
         pts = chaikin(world, pts, need)
+    if prefix is not None:
+        pts = [np.asarray(q, float) for q in prefix[:-2]] + list(pts)
     P = resample(pts, DS)
     if len(P) < 3:
         P = resample([np.array(start, float), (np.array(start) + np.array(goal)) / 2, np.array(goal, float)], DS)
+    if start_vel is not None and prefix is None:
+        # la velocidad inicial es la componente de la actual EN LA DIRECCIÓN DEL CAMINO NUEVO: si hay que dar media
+        # vuelta, empieza frenando (antes arrancaba a la misma rapidez pero en sentido contrario y se pasaba de largo)
+        k = min(4, len(P) - 1)
+        d0 = (P[k] - P[0]) / max(float(np.linalg.norm(P[k] - P[0])), 1e-9)
+        start_speed = float(np.clip(np.dot(start_vel, d0), 0.0, start_speed))
     speed = velocity_profile(P, prof, v_cruise or prof.v_cruise, end_speed, start_speed)
     return Trajectory(P, speed)

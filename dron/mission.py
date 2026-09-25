@@ -52,7 +52,8 @@ import math
 
 import numpy as np
 
-from .planning import MARGIN, plan, segment_clear
+from . import tuning
+from .planning import plan, segment_clear
 from .search import CONFIRM_AGL
 from .target import TargetTracker, intercept_point
 from .world import LENGTH, WIDTH
@@ -60,6 +61,7 @@ from .world import LENGTH, WIDTH
 CRUISE_AGL = 2.5
 PAD_RADIUS = 0.75
 GATE_RADIUS = 1.0
+STITCH = 0.5   # s de la trayectoria actual que se conservan al replanificar (0 = sin coser)
 MODES = ("aterrizar", "carrera")
 
 
@@ -79,6 +81,7 @@ class Mission:
         self.intercept = None
         self.last_plan_t = -1.0
         self.speed_now = 0.0
+        self.vel_now = np.zeros(3)
         self.los_t, self.los_clear = -1.0, False
         self.pad_est = self.pad.copy()
         self.traj = None
@@ -115,9 +118,10 @@ class Mission:
             self.target_z = world.goal[2]
         # no volar más rápido de lo que dejan ver los sensores: poder frenar dentro del alcance de los telémetros
         rng = sensor_range or prof.sensor_range
+        self.P = tuning.params(prof.key)     # parámetros de seguridad y velocidad de este dron (tuning.py)
         # (Se probó a planificar con el límite más prudente de Collision Prevention, control.cp_speed_limit: bajan
         # algo las replanificaciones, 5,9 → 5,1 por vuelo, pero sube el tiempo 1-2 s y no mejora el éxito. Descartado.)
-        self.v_sense = math.sqrt(2 * prof.acc_hor * max(rng - prof.radius - 1.0, 1.0))
+        self.v_sense = math.sqrt(2 * prof.acc_hor * max(rng - prof.radius - self.P["sense"], 1.0))
 
     def _track(self, t):
         """Posición y velocidad predichas del objetivo en t. Al que huye no se le extrapola más de 1,5 s desde la
@@ -137,6 +141,10 @@ class Mission:
         return np.array([p[0], p[1], self.world.terrain.height(p[0], p[1]) + self.world.goal[2]
                          - self.world.terrain.height(*self.world.goal[:2]) + 1.0])
 
+    def _cruise(self):
+        """Velocidad de crucero: la del perfil por el factor `cruise`, sin pasar del 90 % de la máxima."""
+        return min(self.prof.v_cruise * self.P["cruise"], 0.9 * self.prof.v_max)
+
     def _space(self):
         """(espacio para comprobar segmentos, rejilla para A*): el mundo real o el mapa aprendido."""
         if self.map is None:
@@ -149,18 +157,38 @@ class Mission:
             return self.world.terrain.height(x, y)
         return (self.target_z if self.target_z is not None else self.world.goal[2]) - 0.6  # el vehículo mide 0,6 m
 
-    def _plan(self, t, p_est):
+    def _prefix(self, t, p_est, space):
+        """Tramo de la trayectoria actual que se conserva al replanificar (0,5 s por delante), si el dron va por
+        ella y sigue libre; None si no se puede coser (entonces se planifica desde donde está)."""
+        tr = self.traj
+        if tr is None or not STITCH or self.speed_now < 1.0 or self.phase not in ("crucero", "carrera", "búsqueda"):
+            return None, self.speed_now
+        tr_t = t - self.t0
+        i0 = int(np.searchsorted(tr.t, tr_t))
+        i1 = int(np.searchsorted(tr.t, tr_t + STITCH))
+        if i1 - i0 < 3 or i1 >= len(tr.P) - 1 or np.linalg.norm(tr.P[i0] - p_est) > 1.5:
+            return None, self.speed_now
+        pre = tr.P[i0:i1 + 1]
+        need = self.prof.radius + 0.5 * self.P["margin"]
+        if not all(segment_clear(space, a, b, need, 0.25) for a, b in zip(pre, pre[1:])):
+            return None, self.speed_now
+        return pre, float(tr.speed[i0])
+
+    def _plan(self, t, p_est, stitch=False):
         space, grid = self._space()
+        pre, v0 = self._prefix(t, p_est, space) if stitch else (None, self.speed_now)
         # margen que crece con la incertidumbre de posición del filtro (2 sigmas), como hacen los planificadores
         # que tienen en cuenta la covarianza
         sigma = math.sqrt(max(self.est.P[0, 0] + self.est.P[1, 1], 0.0)) if self.est is not None else 0.0
-        self.margin = min(0.6 + 2.0 * sigma, 2.5)
+        self.margin = min(self.P["margin"] + self.P["sigma_k"] * sigma, 2.5)
         if self.phase in ("búsqueda", "confirmación"):  # hacia el punto que ha elegido la búsqueda
             # buscar a un blanco que HUYE es una persecución: a velocidad de carrera (a la de crucero, el PX4 va a
             # 5 m/s, lo mismo que el vehículo, y nunca le recortaba distancia)
+            # (buscar la meta, en cambio, a la velocidad de crucero de fábrica, no la ajustada: el detector necesita
+            # tiempo para ver bien, y con el crucero ajustado el Matrice llegaba a 17 m/s a los puntos de búsqueda)
             v = min(0.9 * self.prof.v_max if self.evader else self.prof.v_cruise, self.v_sense)
             new = plan(space, grid, self.prof, p_est, self.search_goal, v, 0.0,
-                       self.margin, self.speed_now)
+                       self.margin, self.speed_now, min_margin=self.P["margin"], start_vel=self.vel_now)
             if new is None:
                 return False
             self.traj, self.t0 = new, t
@@ -176,8 +204,13 @@ class Mission:
                 old, old_t0 = self.traj, self.t0
                 for cand in (xy, p_t):  # si el punto de intercepción no es alcanzable, ir a por la posición actual
                     goal = np.array([cand[0], cand[1], self._ground_z(cand[0], cand[1]) + 2.0])
-                    self.traj = plan(space, grid, self.prof, p_est, goal, v, end, self.margin,
-                                     self.speed_now)
+                    self.traj = None
+                    if pre is not None:
+                        self.traj = plan(space, grid, self.prof, p_est, goal, v, end, self.margin, v0, pre,
+                                         min_margin=self.P["margin"])
+                    if self.traj is None:
+                        self.traj = plan(space, grid, self.prof, p_est, goal, v, end, self.margin,
+                                         self.speed_now, min_margin=self.P["margin"], start_vel=self.vel_now)
                     if self.traj is not None:
                         self.intercept = goal
                         self.t0 = t
@@ -190,8 +223,12 @@ class Mission:
                 return True
         else:
             goal = np.array([self.pad_est[0], self.pad_est[1], self.pad_z_est + CRUISE_AGL])
-            v, end = min(self.prof.v_cruise, self.v_sense), 0.0
-        new = plan(space, grid, self.prof, p_est, goal, v, end, self.margin, self.speed_now)
+            v, end = min(self._cruise(), self.v_sense), 0.0
+        mm = self.P["margin"]
+        new = plan(space, grid, self.prof, p_est, goal, v, end, self.margin, v0, pre, min_margin=mm)             if pre is not None else None
+        if new is None:
+            new = plan(space, grid, self.prof, p_est, goal, v, end, self.margin, self.speed_now, min_margin=mm,
+                       start_vel=self.vel_now)
         if new is None:
             if self.traj is None:  # ni siquiera hay un primer plan
                 self.plan_error = "sin camino"
@@ -333,12 +370,13 @@ class Mission:
         P = P[np.linalg.norm(P - est_p, axis=1) > self.prof.radius + 1.0]
         if not len(P):
             return True
-        return bool((self.map.grid().clearance_many(P) >= self.prof.radius + 0.5 * MARGIN).all())
+        return bool((self.map.grid().clearance_many(P) >= self.prof.radius + 0.5 * self.P["margin"]).all())
 
     def reference(self, t, est_p, est_v, readings):
         """(p_ref, v_ref, a_ref, yaw_ref) para el control."""
         prof = self.prof
         self.speed_now = min(float(np.linalg.norm(est_v)), 0.9 * prof.v_max)
+        self.vel_now = np.asarray(est_v, float).copy()
         if self.moving and "target" in readings:
             self.last_seen_t = t
             self.last_meas = (t, np.asarray(readings["target"], float), readings.get("target_z"))
@@ -419,7 +457,7 @@ class Mission:
                 p_t, v_t = self._track(t)
                 xy, _ = intercept_point(est_p, p_t, v_t, 0.8 * min(0.9 * prof.v_max, self.v_sense))
                 if self.intercept is None or np.linalg.norm(xy - self.intercept[:2]) > 2.0 or self.phase == "reintento":
-                    self._plan(t, est_p)
+                    self._plan(t, est_p, stitch=True)
                 else:
                     self.last_plan_t = t
         if self.search is not None and self.phase in ("búsqueda", "confirmación"):
@@ -444,7 +482,7 @@ class Mission:
             if not self._still_clear(t, est_p):
                 self.replans += 1
                 self.map_replans += 1
-                if not self._plan(t, est_p):
+                if not self._plan(t, est_p, stitch=True):
                     self.blocked, self.blocked_t = est_p.copy(), t
                     return self.blocked, zero, zero, self.yaw
         if self.phase in ("crucero", "carrera", "búsqueda", "confirmación"):
@@ -470,7 +508,9 @@ class Mission:
         if self.phase == "espera":  # enjambre: otro dron ha encontrado la meta
             return self.hold, zero, zero, self.yaw
         if self.phase == "reintento":  # carrera: la pasó de largo, vuelve a por ella
-            return (self.gate_at(t) if self.moving else self.gate_est), zero, zero, self.yaw
+            g = self.gate_at(t) if self.moving else self.gate_est
+            g = np.array([min(max(g[0], 2.0), LENGTH - 2.0), min(max(g[1], 2.0), WIDTH - 2.0), g[2]])  # dentro
+            return g, zero, zero, self.yaw
         target = np.array([self.pad_est[0], self.pad_est[1], self.pad_z_est + CRUISE_AGL])
         if self.phase == "aproximación":
             err = math.hypot(*(target[:2] - est_p[:2]))

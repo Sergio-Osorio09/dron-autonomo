@@ -1,0 +1,32 @@
+{
+  "best": {
+    "cp_acc": 0.9,
+    "cp_margin": 0.4,
+    "cp_react": 0.1,
+    "margin": 0.507,
+    "sigma_k": 2.004,
+    "sense": 1.467,
+    "cruise": 1.8
+  },
+  "tuning": {
+    "score": 0.8564819444444447,
+    "success": 1.0,
+    "crash": 0,
+    "time": 21.527708333333297,
+    "n": 24
+  },
+  "valid_default": {
+    "score": 0.8174527777777783,
+    "success": 1.0,
+    "crash": 0,
+    "time": 27.38208333333326,
+    "n": 60
+  },
+  "valid_tuned": {
+    "score": 0.8486094444444461,
+    "success": 1.0,
+    "crash": 0,
+    "time": 22.708583333333085,
+    "n": 60
+  }
+}
