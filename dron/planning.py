@@ -17,6 +17,10 @@
      * suavizado del perfil para aproximar el límite de tirón (jerk);
      * al REPLANIFICAR en vuelo, la trayectoria nueva arranca a la velocidad actual (si no, frenaría cada vez).
    El resultado es una referencia p(t), v(t), a(t) que el control sigue con prealimentación.
+
+Todo funciona igual con el mundo conocido (fase 1: `ClearanceGrid(world)` + `world.clearance`) que con el mapa
+que construye el dron (fase 2: `mapping.LearnedGrid`, que tiene la misma interfaz). Por eso las funciones reciben
+un `space`: cualquier objeto con `clearance(p, limit)`.
 """
 import heapq
 import math
@@ -146,13 +150,27 @@ def astar(grid: ClearanceGrid, start, goal, need: float,
     return None
 
 
-def segment_clear(world: World, a, b, need: float, step: float = 0.3) -> bool:
+def segment_clear(space, a, b, need: float, step: float = 0.3) -> bool:
     n = max(1, int(np.linalg.norm(b - a) / step))
+    many = getattr(space, "clearance_many", None)
+    if many is not None:  # mapa aprendido: todos los puntos de una vez
+        P = a + (b - a) * (np.arange(n + 1)[:, None] / n)
+        return bool((many(P) >= need).all())
     for k in range(n + 1):
         p = a + (b - a) * (k / n)
-        if world.clearance(tuple(p), need + 0.5, ground=True) < need:
+        if space.clearance(tuple(p), need + 0.5, ground=True) < need:
             return False
     return True
+
+
+def trajectory_clear(space, traj, t_from: float, need: float, horizon: float = None) -> bool:
+    """¿Sigue libre lo que queda de la trayectoria (desde t_from, hasta `horizon` s más si se da)?"""
+    i0 = int(np.searchsorted(traj.t, t_from))
+    i1 = len(traj.t) if horizon is None else int(np.searchsorted(traj.t, t_from + horizon)) + 1
+    P = traj.P[i0:i1]
+    if not len(P):
+        return True
+    return bool((space.clearance_many(P) >= need).all())
 
 
 def string_pull(world: World, pts: List[np.ndarray], need: float) -> List[np.ndarray]:
@@ -272,9 +290,12 @@ def velocity_profile(P: np.ndarray, prof: Profile, v_cruise: float, end_speed: f
     return np.maximum(v, 0.0)
 
 
-def plan(world: World, grid: ClearanceGrid, prof: Profile, start, goal, v_cruise: Optional[float] = None,
+def plan(world, grid, prof: Profile, start, goal, v_cruise: Optional[float] = None,
          end_speed: float = 0.0, margin: float = MARGIN, start_speed: float = 0.0):
     """Trayectoria de start a goal (puntos 3D) o None si no hay camino. end_speed > 0: cruza el final sin frenar.
+
+    `world` es el espacio contra el que se comprueban los segmentos (el mundo real o el mapa aprendido) y `grid`
+    la rejilla de holgura para A*.
 
     `margin` es la holgura de seguridad deseada; si con ella no hay camino, se prueba con márgenes menores
     (hasta el mínimo MARGIN). Así, con un GPS malo, el dron deja más espacio a los obstáculos cuando se puede.

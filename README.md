@@ -6,12 +6,16 @@ colinas, montañas o precipicios, con viento que se abriga tras los edificios, l
 aterriza sobre una plataforma en el suelo, en una azotea o en una cima, o, en **modo carrera**, cruza la meta lo más
 rápido posible.
 
+**Fase 2:** el dron puede volar **sin conocer el mundo**. Con sus telémetros y una cámara de profundidad construye
+un mapa de ocupación 3D mientras vuela, planifica sobre él y replanifica cada vez que descubre un obstáculo.
+
 > Arquitectura, fuentes de los datos, lecciones aprendidas y plan de fases: **[docs/CONTEXTO.md](docs/CONTEXTO.md)**
 
 ## Opciones de cada vuelo
 
 | Opción | Valores |
 |---|---|
+| Mapa | **Desconocido** (lo construye con sus sensores, fase 2) o **conocido** (fase 1, para comparar) |
 | Misión | **Aterrizar** en la meta o **Carrera** (cruzar la meta sin frenar; se guarda el mejor tiempo) |
 | Dron | Mini 3 (249 g) · genérico PX4 · Matrice 350 RTK |
 | Nivel y densidad | bosque / ciudad / mixto · densidad baja, normal, alta o extrema |
@@ -35,6 +39,11 @@ rápido posible.
 - **Lluvia:** reduce el alcance y la precisión de telémetros, cámara y GPS, y añade arrastre.
 - **Sensores con ruido:** IMU con sesgo, GPS con deriva, barómetro, brújula, 40 telémetros y cámara inferior.
   Niveles ideal, realista y alto.
+- **Mapa que construye el propio dron (fase 2):** una cámara de profundidad (campo de visión de la RealSense
+  D435) y los telémetros alimentan un **mapa de ocupación 3D con log-odds**, como OctoMap, insertado desde la
+  posición *estimada*. Sobre él se calcula el **campo de distancias (ESDF)**. Lo desconocido se trata como libre
+  para planificar; cada vez que el mapa cambia, el dron comprueba su trayectoria y **replanifica sin frenar** si ya
+  no está libre.
 - **Filtro de Kalman** (como el EKF2 de PX4) con puertas de innovación. El dron vuela con lo que *cree*, no con la
   posición real.
 - **Planificación:** A\* sobre un campo de distancias, estirado de cuerda, suavizado y **perfil de velocidad
@@ -54,6 +63,8 @@ rápido posible.
 - La escena 3D con terreno coloreado por altura (hierba, roca, nieve), la plataforma o la puerta de meta, lluvia, el dron inclinándose de verdad, la **trayectoria coloreada por velocidad**, **partículas de
   viento**, la posición **estimada** (naranja) frente a la real, las **lecturas de GPS** (rosa) y los rayos de los
   telémetros.
+- **El mapa del dron:** celdas ocupadas coloreadas por altura, niebla sobre lo que aún no ha explorado y los ecos de
+  la cámara de profundidad. El selector *Vista* muestra el mundo real, solo lo que sabe el dron o los dos.
 - HUD con fase, velocidad, altura, inclinación, viento y batería, más una brújula con el viento y el rumbo.
 - Gráficas de **velocidad real frente a planificada** y de **error de estimación frente a viento**.
 - Ficha del dron con sus datos reales y resultados de la sesión.
@@ -68,14 +79,16 @@ ejemplo, entrenando un modelo), la calidad gráfica baja sola para mantener la f
 
 ## Resultados
 
-Tabla completa (3 drones × 16 escenarios, mismos mundos para todos) en [eval/resultados.md](eval/resultados.md):
+Tabla completa (3 drones × 16 escenarios × mapa conocido y desconocido, mismos mundos para todos) en
+[eval/resultados.md](eval/resultados.md):
 
-- **45 de 48 combinaciones al 100 %** (3 vuelos cada una): los tres drones en calma y con viento de hasta 6 m/s,
-  montaña con meta en la cima, azotea, precipicios, lluvia fuerte, carreras y **objetivo en movimiento (suave, medio,
-  rápido y variable)**.
+- **Sin conocer el mundo, 46 de 48 combinaciones al 100 %** (con el mapa conocido, 44 de 48): los tres drones en
+  calma y con viento, montaña con meta en la cima, azotea, precipicios, bosque extremo, lluvia fuerte, carreras y
+  **objetivo en movimiento**.
+- **Coste de construir el mapa:** +5 % de tiempo (22,2 s frente a 21,2 s de media). Cada replanificación tarda ~15 ms.
 - **Límites reales:** el PX4 genérico, con viento de 10 m/s (su límite), aterriza a ~1 m de la plataforma con ráfagas
-  moderadas y choca con ráfagas fuertes; el Matrice 350 chocó 1 de 3 veces en el bosque de densidad extrema.
-- **Precisión:** aterriza a 2-30 cm del centro. Error del filtro: ~1,2 m con el GPS del Mini, ~0,8 m con PX4 y
+  moderadas y choca con ráfagas fuertes.
+- **Precisión:** aterriza a 2-40 cm del centro. Error del filtro: ~1,2 m con el GPS del Mini, ~0,7 m con PX4 y
   ~0,2 m con RTK.
 
 ## Uso
@@ -83,7 +96,7 @@ Tabla completa (3 drones × 16 escenarios, mismos mundos para todos) en [eval/re
 ```bash
 pip install -r requirements.txt
 python server.py            # http://127.0.0.1:7873
-python -m pytest -q         # 18 tests
+python -m pytest -q         # 23 tests
 python eval/eval_headless.py --flights 2 --md eval/resultados.md
 ```
 
@@ -93,14 +106,14 @@ python eval/eval_headless.py --flights 2 --md eval/resultados.md
 dron-autonomo/
 ├── CLAUDE.md, docs/CONTEXTO.md     guía para agentes y contexto completo
 ├── dron/                           params, world (terreno), target (objetivo móvil), dynamics, wind, sensors, estimator,
-│                                   planning, control, mission, sim
+│                                   mapping (mapa que construye el dron), planning, control, mission, sim
 ├── eval/                           eval_headless.py y resultados
-├── tests/                          física, viento, filtro, planificación y misión completa
+├── tests/                          física, viento, filtro, planificación, mapa y misión completa
 ├── server.py                       servidor local (puerto 7873)
 └── ui/                             index.html, style.css, app.js (three.js)
 ```
 
 ## Próximas fases
 
-2 mapa desconocido y replanificación · 3 misión de búsqueda con niebla de guerra y mapa de probabilidad ·
+2 (hecha salvo las trayectorias B-spline) · 3 misión de búsqueda con niebla de guerra y mapa de probabilidad ·
 4 objetivo que huye · 5 varios drones · 6 banco de pruebas y puente a PX4 SITL. Detalle en `docs/CONTEXTO.md`.

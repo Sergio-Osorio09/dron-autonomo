@@ -11,7 +11,8 @@ conocen el mapa (lo que cambia en la fase 2) y el plan de la fase 2.
 ## Reglas de trabajo
 
 - Cada dato de un dron real va en `dron/params.py` con su fuente. Lo que no publica el fabricante se marca como ESTIMADO.
-- El control y la misión usan SIEMPRE el estado estimado (`sim.est`), nunca el real (`sim.drone`). El estado real
+- El control y la misión usan SIEMPRE el estado estimado (`sim.est`), nunca el real (`sim.drone`). Con
+  `map_mode="desconocido"`, tampoco el mundo: planifican sobre `sim.map` (dron/mapping.py). El estado real
   solo se usa para la física, los sensores y la evaluación.
 - `dron/dynamics.py` es la única fuente de verdad de la física, y `dron/world.py` de la geometría.
 - La web (`ui/`) solo dibuja; three.js se carga desde jsDelivr.
@@ -21,7 +22,7 @@ conocen el mapa (lo que cambia en la fase 2) y el plan de la fase 2.
 ## Comandos
 
 ```bash
-python -m pytest -q                                   # 18 tests, ~20 s
+python -m pytest -q                                   # 23 tests, ~45 s
 python server.py                                      # http://127.0.0.1:7873
 python eval/eval_headless.py --flights 2 --md eval/resultados.md   # ~4 min
 ```

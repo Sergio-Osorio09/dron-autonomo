@@ -18,11 +18,12 @@
     <span class="logo">✈</span>
     <div>
       <h1>Dron autónomo</h1>
-      <p class="sub">Física con datos reales, terreno con relieve, viento que interactúa con los obstáculos, sensores con ruido, Kalman, control PX4 y planificación</p>
+      <p class="sub">Física con datos reales, viento, sensores con ruido, Kalman y control PX4. Fase 2: el dron no conoce el mundo y construye su propio mapa mientras vuela</p>
     </div>
   </div>
   <div class="controls">
     <label class="field">Misión <select id="mode"></select></label>
+    <label class="field" title="Desconocido: el dron construye su mapa con los sensores mientras vuela">Mapa <select id="map-mode"></select></label>
     <label class="field">Dron <select id="profile"></select></label>
     <label class="field">Nivel <select id="level"></select></label>
     <label class="field">Terreno <select id="terrain"></select></label>
@@ -38,6 +39,7 @@
     <button id="btn-new" class="btn">Nuevo vuelo</button>
     <button id="btn-play" class="btn primary">▶ Volar</button>
     <label class="field">Velocidad <select id="speed"><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+    <label class="field" title="Qué dibujar: el mundo real, el mapa que ha construido el dron o los dos">Vista <select id="view"><option value="both">Mundo + mapa del dron</option><option value="map">Solo lo que sabe el dron</option><option value="world">Solo el mundo real</option></select></label>
     <label class="field">Cámara <select id="camera"><option value="chase">Persecución</option><option value="orbit">Libre</option><option value="top">Cenital</option></select></label>
     <div class="checks">
       <label class="check"><input id="precision" type="checkbox" checked> Aterrizaje de precisión</label>
@@ -68,6 +70,9 @@
         <span><i style="background:#e879f9"></i>lecturas GPS</span>
         <span><i style="background:#93c5fd"></i>viento (más lento tras obstáculos)</span>
         <span><i style="background:#facc15"></i>objetivo: recorrido y punto de intercepción</span>
+        <span class="map-only"><i class="grad-map"></i>mapa del dron: celdas ocupadas (por altura)</span>
+        <span class="map-only"><i style="background:#22d3ee"></i>cámara de profundidad</span>
+        <span class="map-only"><i style="background:#0b1016;border:1px solid #475569"></i>zona sin explorar</span>
       </div>
       <div class="loading" id="loading">Cargando escena 3D…</div>
     </div>
@@ -99,6 +104,10 @@
         <div><span>Vel. máxima</span><b id="k-vmax">—</b></div>
         <div><span>Objetivo: distancia</span><b id="k-tdist">—</b></div>
         <div><span>Objetivo: velocidad</span><b id="k-tvel">—</b></div>
+        <div><span>Mapa</span><b id="k-map">—</b></div>
+        <div><span>Explorado</span><b id="k-explored">—</b></div>
+        <div><span>Replanif. por el mapa</span><b id="k-mapreplan">—</b></div>
+        <div><span>Distancia recorrida</span><b id="k-dist">—</b></div>
       </div>
     </div>
 
@@ -133,6 +142,7 @@
         <li><b>Planificación:</b> A* sobre campo de distancias, estirado de cuerda, suavizado y perfil de velocidad óptimo en tiempo: rápido en rectas, frena antes de las curvas.</li>
         <li><b>Control en cascada PX4</b> (posición → velocidad → aceleración → inclinación) con las ganancias por defecto de PX4, y <b>Collision Prevention</b> con los telémetros.</li>
         <li><b>Misión:</b> <i>aterrizar</i> (despegue → crucero → aproximación → aterrizaje de precisión) o <i>carrera</i> (lo más rápido posible, cruzando la meta sin frenar). En carrera, el objetivo puede ir sobre un <b>vehículo en movimiento</b> (suave, medio, rápido o variable): el dron lo sigue con un <b>filtro de Kalman</b>, vuela al <b>punto de intercepción</b> y, con línea de visión, pasa a <b>persecución predictiva</b>.</li>
+        <li><b>Mapa desconocido (fase 2):</b> el dron empieza sin saber nada. Con los telémetros y una <b>cámara de profundidad</b> (campo de visión de la RealSense D435) construye un <b>mapa de ocupación 3D con log-odds</b> como OctoMap, calcula su <b>campo de distancias (ESDF)</b> y planifica sobre él tratando lo desconocido como libre. Cada vez que el mapa cambia comprueba la trayectoria y, si ya no está libre, <b>replanifica</b> sin frenar.</li>
         <li><b>Seguridad:</b> nunca vuela más rápido de lo que le dejan frenar sus sensores, y deja más margen a los obstáculos cuanto peor es su GPS.</li>
       </ol>
     </details>

@@ -1,4 +1,4 @@
-// Dron autónomo (fase 1): el navegador solo dibuja; toda la simulación vive en server.py.
+// Dron autónomo: el navegador solo dibuja; toda la simulación (y el mapa que construye el dron) vive en server.py.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
@@ -8,7 +8,7 @@ const els = {
   noise: $("noise"), newBtn: $("btn-new"), play: $("btn-play"), speed: $("speed"), camera: $("camera"),
   precision: $("precision"), cp: $("cp"), rays: $("show-rays"), gps: $("show-gps"), viewport: $("viewport"),
   toast: $("toast"), banner: $("banner"), mode: $("mode"), terrain: $("terrain"), density: $("density"),
-  goalKind: $("goal-kind"), rain: $("rain"), motion: $("motion"),
+  goalKind: $("goal-kind"), rain: $("rain"), motion: $("motion"), mapMode: $("map-mode"), view: $("view"),
 };
 const PHASES = { "en tierra": "En tierra", despegue: "Despegue", crucero: "Crucero", "aproximación": "Aproximación",
   aterrizaje: "Aterrizaje", aterrizado: "Aterrizado", carrera: "Carrera", reintento: "Volviendo a la meta", meta: "¡Meta!", "persecución": "Persecución" };
@@ -20,6 +20,7 @@ const LABELS = {
   rain: { no: "Sin lluvia", moderada: "Moderada", fuerte: "Fuerte" },
   motion: { fija: "Quieto", suave: "En movimiento: suave", medio: "En movimiento: medio", "rápido": "En movimiento: rápido",
     variable: "En movimiento: variable" },
+  map: { conocido: "Conocido (fase 1)", desconocido: "Desconocido: lo construye (fase 2)" },
 };
 const LEVEL_LABEL = { bosque: "Bosque", ciudad: "Ciudad", mixto: "Mixto" };
 const NOISE_LABEL = { ideal: "Ideales (sin ruido)", realista: "Realistas", alto: "Ruido alto" };
@@ -123,7 +124,68 @@ let rover = null, gateMesh = null, trackLine = null;
 const interceptMarker = new THREE.Mesh(new THREE.OctahedronGeometry(0.35), new THREE.MeshBasicMaterial({ color: "#facc15", wireframe: true }));
 interceptMarker.visible = false;
 
-let padMesh = null;
+let padMesh = null, fogMesh = null;
+// --- mapa que construye el dron (fase 2): celdas ocupadas (instancias coloreadas por altura) y niebla
+const fogCanvas = document.createElement("canvas");
+const fogTex = new THREE.CanvasTexture(fogCanvas);
+fogTex.flipY = false;
+fogTex.magFilter = THREE.NearestFilter;
+const MAX_VOX = 40000;
+const voxMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(0.94, 0.94, 0.94),
+  new THREE.MeshLambertMaterial({ transparent: true, opacity: 0.6 }), MAX_VOX);
+voxMesh.count = 0;
+voxMesh.frustumCulled = false;
+scene.add(voxMesh);
+let mapData = null;
+function voxelColor(z) {  // morado (bajo) -> azul -> turquesa -> lima -> ámbar (alto)
+  const stops = [[0, [0.49, 0.23, 0.93]], [0.2, [0.15, 0.39, 0.92]], [0.45, [0.08, 0.72, 0.65]], [0.7, [0.52, 0.8, 0.09]], [1, [0.96, 0.62, 0.04]]];
+  const f = Math.min(1, Math.max(0, z / 18));
+  for (let k = 1; k < stops.length; k++) if (f <= stops[k][0]) {
+    const [f0, c0] = stops[k - 1], [f1, c1] = stops[k], t = (f - f0) / (f1 - f0);
+    return c0.map((c, j) => c + (c1[j] - c) * t);
+  }
+  return stops[stops.length - 1][1];
+}
+function drawMap(m) {
+  mapData = m;
+  const [nx, ny, nz] = m.shape, c = m.cell;
+  const mat = new THREE.Matrix4(), col = new THREE.Color();
+  const n = Math.min(m.occ.length, MAX_VOX);
+  for (let k = 0; k < n; k++) {
+    const idx = m.occ[k], z = idx % nz, y = Math.floor(idx / nz) % ny, x = Math.floor(idx / (ny * nz));
+    const p = V([(x + 0.5) * c, (y + 0.5) * c, (z + 0.5) * c]);
+    mat.makeTranslation(p.x, p.y, p.z);
+    voxMesh.setMatrixAt(k, mat);
+    voxMesh.setColorAt(k, col.setRGB(...voxelColor((z + 0.5) * c)));
+  }
+  voxMesh.count = n;
+  voxMesh.instanceMatrix.needsUpdate = true;
+  if (voxMesh.instanceColor) voxMesh.instanceColor.needsUpdate = true;
+  fogCanvas.width = nx; fogCanvas.height = ny;
+  const g = fogCanvas.getContext("2d"), img = g.createImageData(nx, ny);
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+    const seen = m.seen[i * ny + j] === "1", o = (j * nx + i) * 4;
+    img.data.set(seen ? [0, 0, 0, 0] : [6, 10, 16, 190], o);
+  }
+  g.putImageData(img, 0, 0);
+  fogTex.needsUpdate = true;
+  applyView();
+}
+function clearMap() {
+  mapData = null;
+  voxMesh.count = 0;
+  applyView();
+}
+// qué se ve: el mundo real, lo que sabe el dron o los dos
+function applyView() {
+  const v = els.view.value, hasMap = !!mapData;
+  worldGroup.children.forEach((c) => { if (c.userData.real) c.visible = !(hasMap && v === "map"); });
+  voxMesh.visible = hasMap && v !== "world";
+  voxMesh.material.opacity = v === "map" ? 0.95 : 0.55;
+  if (fogMesh) fogMesh.visible = hasMap && v !== "world";
+  document.querySelectorAll(".legend .map-only").forEach((e) => e.classList.toggle("hidden", !hasMap));
+}
+
 function buildWorld(w) {
   world = w;
   worldGroup.clear();
@@ -150,7 +212,17 @@ function buildWorld(w) {
   geo.computeVertexNormals();
   const ground = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1, side: THREE.DoubleSide }));
   ground.receiveShadow = true;
+  ground.userData.real = true;
   worldGroup.add(ground);
+  // niebla de lo no explorado: la misma malla del terreno con una textura de 1 píxel por columna del mapa
+  const uv = new Float32Array(nx * ny * 2);
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) uv.set([(i * T.res) / L, (j * T.res) / W], (i * ny + j) * 2);
+  geo.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  fogMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: fogTex, transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, side: THREE.DoubleSide }));
+  fogMesh.renderOrder = 1;
+  fogMesh.visible = false;
+  worldGroup.add(fogMesh);
   const edges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(L, H, W)),
     new THREE.LineBasicMaterial({ color: "#3d5a6b", transparent: true, opacity: 0.25 }));
   edges.position.set(L / 2, H / 2, -W / 2);
@@ -170,6 +242,7 @@ function buildWorld(w) {
       mesh.position.copy(V([(o.x0 + o.x1) / 2, (o.y0 + o.y1) / 2, o.base + o.h / 2]));
     }
     mesh.castShadow = mesh.receiveShadow = true;
+    mesh.userData.real = true;  // lo que el dron NO sabe (en modo mapa desconocido)
     worldGroup.add(mesh);
   }
   const start = new THREE.Mesh(new THREE.RingGeometry(0.5, 0.65, 32), new THREE.MeshBasicMaterial({ color: "#19a7a0", side: THREE.DoubleSide }));
@@ -304,6 +377,20 @@ function drawRays(center) {
     C.set([...c, ...c], i * 6);
   });
   rayGeo.attributes.position.needsUpdate = rayGeo.attributes.color.needsUpdate = true;
+}
+
+// ecos de la cámara de profundidad (lo que ve ahora mismo)
+const DEPTH_N = 400;
+const depthGeo = new THREE.BufferGeometry();
+depthGeo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(DEPTH_N * 3), 3));
+const depthPts = new THREE.Points(depthGeo, new THREE.PointsMaterial({ color: "#22d3ee", size: 0.14, transparent: true, opacity: 0.85 }));
+depthPts.frustumCulled = false;
+scene.add(depthPts);
+function drawDepth(pts) {
+  const arr = depthGeo.attributes.position.array, n = Math.min(pts.length, DEPTH_N);
+  for (let i = 0; i < n; i++) { const p = V(pts[i]); arr.set([p.x, p.y, p.z], i * 3); }
+  depthGeo.setDrawRange(0, n);
+  depthGeo.attributes.position.needsUpdate = true;
 }
 
 // partículas de viento
@@ -540,7 +627,12 @@ function drawPanel(f) {
   $("h-tilt").textContent = f.tilt_deg.toFixed(0) + "°";
   $("h-wind").textContent = Math.hypot(f.wind[0], f.wind[1]).toFixed(1) + " m/s";
   $("h-bat").textContent = f.battery.toFixed(1) + " %";
-  $("phase-pill").textContent = PHASES[f.phase] || f.phase;
+  $("phase-pill").textContent = f.blocked ? "Buscando camino" : PHASES[f.phase] || f.phase;
+  const unknown = f.map_mode === "desconocido";
+  $("k-map").textContent = unknown ? "lo construye" : "conocido";
+  $("k-explored").textContent = unknown ? fmt(100 * f.explored, 0, " %") : "—";
+  $("k-mapreplan").textContent = unknown ? f.map_replans : "—";
+  $("k-dist").textContent = fmt(f.distance, 0, " m");
   $("k-speed").textContent = `${f.speed.toFixed(1)} / ${f.ref_speed.toFixed(1)} m/s`;
   $("k-vz").textContent = fmt(f.vz, 1, " m/s");
   $("k-acc").textContent = fmt(Math.hypot(...f.acc), 1, " m/s²");
@@ -623,6 +715,9 @@ function applyFrame(f) {
   frame = f;
   rayData = f.rays || [];
   rayLines.visible = els.rays.checked;
+  depthPts.visible = els.rays.checked && f.map_mode === "desconocido";
+  if (f.depth_pts) drawDepth(f.depth_pts);
+  if (f.map) drawMap(f.map);
   const showGps = els.gps.checked;
   estMarker.visible = gpsPts.visible = showGps;
   if (f.gps && (!lastGps || f.gps.join() !== lastGps)) {
@@ -655,7 +750,7 @@ function config() {
     wind_speed: Number(els.wind.value), wind_dir: Number(els.wdir.value), gusts: Number(els.gusts.value),
     noise: els.noise.value, precision_landing: els.precision.checked, collision_prevention: els.cp.checked,
     mode: els.mode.value, terrain: els.terrain.value, density: els.density.value, goal_kind: els.goalKind.value,
-    rain: els.rain.value, motion: els.motion.value };
+    rain: els.rain.value, motion: els.motion.value, map_mode: els.mapMode.value };
 }
 async function newFlight() {
   setPlaying(false);
@@ -669,6 +764,8 @@ async function newFlight() {
     world.rain = f.config.rain;
     buildWorld(f.world);
     world.rain = f.config.rain;
+    clearMap();
+    depthGeo.setDrawRange(0, 0);
     telemetry.length = 0; gpsList.length = 0; lastGps = null;
     gpsGeo.setDrawRange(0, 0);
     pending.length = 0; lastT = f.t; streamEnded = false;
@@ -703,11 +800,15 @@ async function loop() {
 els.newBtn.onclick = newFlight;
 els.play.onclick = () => setPlaying(!playing);
 for (const el of [els.profile, els.level, els.gusts, els.noise, els.precision, els.cp, els.mode, els.terrain,
-  els.density, els.goalKind, els.rain, els.motion]) el.onchange = newFlight;
+  els.density, els.goalKind, els.rain, els.motion, els.mapMode]) el.onchange = newFlight;
+els.view.onchange = applyView;
 els.wind.oninput = () => { $("wind-v").textContent = `${els.wind.value} m/s`; };
 els.wdir.oninput = () => { $("wdir-v").textContent = `${els.wdir.value}°`; };
 els.wind.onchange = els.wdir.onchange = newFlight;
-els.rays.onchange = () => { rayLines.visible = els.rays.checked; };
+els.rays.onchange = () => {
+  rayLines.visible = els.rays.checked;
+  depthPts.visible = els.rays.checked && !!mapData;
+};
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
   if (e.key === " ") { e.preventDefault(); setPlaying(!playing); }
@@ -733,6 +834,8 @@ document.addEventListener("keydown", (e) => {
   fill(els.goalKind, options.goal_kinds, LABELS.goal);
   fill(els.rain, options.rain, LABELS.rain);
   fill(els.motion, options.motions, LABELS.motion);
+  fill(els.mapMode, options.map_modes, LABELS.map);
+  els.mapMode.value = "desconocido";
   els.profile.value = "mini"; els.level.value = "mixto"; els.noise.value = "realista";
   els.terrain.value = "colinas"; els.density.value = "normal"; els.goalKind.value = "suelo"; els.rain.value = "no";
   els.motion.value = "fija";

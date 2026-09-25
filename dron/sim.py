@@ -2,7 +2,16 @@
 
 Bucle a 200 Hz (dt = 5 ms), en este orden cada paso:
     viento → física (estado REAL) → IMU → predicción del filtro → sensores lentos y correcciones del filtro
-    → misión (referencia) → control (con el estado ESTIMADO) → órdenes a motores y actitud
+    → [mapa: barridos insertados desde la posición ESTIMADA] → misión (referencia) → control (con el estado
+    ESTIMADO) → órdenes a motores y actitud
+
+Modo de mapa (`map_mode`):
+  * "conocido"    (fase 1) el planificador usa la rejilla de holgura del mundo real;
+  * "desconocido" (fase 2) el dron empieza sin saber nada y construye un mapa de ocupación con los telémetros y
+    la cámara de profundidad (mapping.py). El planificador, la altura mínima de crucero y la altura del despegue
+    salen de ese mapa. El telémetro inferior ya no corrige la altura absoluta (haría falta conocer el terreno):
+    la altura sale del GPS y el barómetro, como en PX4 cuando no hay estimación del terreno.
+  El mundo real se sigue usando para la física, los sensores y la evaluación, y para generar un mundo con camino.
 """
 import math
 import random
@@ -13,6 +22,7 @@ import numpy as np
 from .control import PositionController
 from .dynamics import Multirotor
 from .estimator import Estimator
+from .mapping import OccupancyMap
 from .mission import GATE_RADIUS, PAD_RADIUS, Mission
 from .params import PROFILES
 from .planning import ClearanceGrid, astar, MARGIN
@@ -20,6 +30,7 @@ from .sensors import NOISE_LEVELS, RAIN, Sensors
 from .wind import Wind
 from .world import LENGTH, WIDTH, make_world
 
+MAP_MODES = ("conocido", "desconocido")
 DT = 0.005
 MAX_TIME = 150.0
 
@@ -43,7 +54,9 @@ class Simulation:
                  wind_speed: float = 0.0, wind_dir: float = 0.0, gusts: int = 0, noise: str = "realista",
                  precision_landing: bool = True, collision_prevention: bool = True, terrain: str = "plano",
                  density: str = "normal", goal_kind: str = "suelo", mode: str = "aterrizar", rain: str = "no",
-                 motion: str = "fija"):
+                 motion: str = "fija", map_mode: str = "conocido"):
+        if map_mode not in MAP_MODES:
+            raise ValueError("Modo de mapa desconocido %r" % map_mode)
         if profile not in PROFILES:
             raise ValueError("Perfil desconocido %r" % profile)
         if noise not in NOISE_LEVELS:
@@ -58,7 +71,7 @@ class Simulation:
                        "wind_dir": wind_dir, "gusts": gusts, "noise": noise, "precision_landing": precision_landing,
                        "collision_prevention": collision_prevention, "terrain": terrain, "density": density,
                        "goal_kind": self.world.goal_kind, "mode": mode, "rain": rain,
-                       "motion": self.world.motion.kind if self.world.motion else "fija"}
+                       "motion": self.world.motion.kind if self.world.motion else "fija", "map_mode": map_mode}
         self.mode = mode
         self.collision_prevention = collision_prevention
         yaw = random.Random(seed).uniform(-math.pi, math.pi)
@@ -68,7 +81,10 @@ class Simulation:
         self.sensors = Sensors(self.prof, noise, seed + 1, rain)
         self.est = Estimator(self.drone.p.copy(), self.prof.gps_sigma, NOISE_LEVELS[noise])
         self.ctrl = PositionController(self.prof)
-        self.mission = Mission(self.world, self.grid, self.prof, precision_landing, mode, self.sensors.range)
+        self.map = OccupancyMap() if map_mode == "desconocido" else None
+        self.sensors.depth_on = self.map is not None
+        self.mission = Mission(self.world, self.grid, self.prof, precision_landing, mode, self.sensors.range,
+                               self.map)
         self.mission.yaw = yaw
         self.mission.est = self.est
         self.t = 0.0
@@ -80,6 +96,10 @@ class Simulation:
         self.history = []
         self._last_hist = -1.0
         self._next_target = 0.0
+        self.distance = 0.0
+        self._map_sent = -1
+        self._map_sent_t = -9.0
+        self._depth_pts = None
 
     @property
     def done(self) -> bool:
@@ -109,11 +129,21 @@ class Simulation:
             gx, gy, _ = self.world.goal_at(self.t)
             s = 0.3 * max(self.sensors.m, 0.1)
             r["target"] = (gx + self.sensors.rng.gauss(0, s), gy + self.sensors.rng.gauss(0, s))
+            if self.map is not None:  # el rastreador GNSS también da la altura (1,5 veces menos precisa)
+                r["target_z"] = self.world.goal_at(self.t)[2] + self.sensors.rng.gauss(0, 1.5 * s)
         if "gps_pos" in r:
             est.gps(r["gps_pos"], r["gps_vel"])
         if "baro" in r:
             est.baro(r["baro"])
-        if "rays" in r:
+        if self.map is not None:  # el mapa se construye desde donde el dron CREE estar
+            if "rays" in r:
+                self.map.insert(est.p, [x["dir"] for x in r["rays"]], [x["dist"] for x in r["rays"]], self.sensors.range)
+            if "depth" in r:
+                dep = r["depth"]
+                self.map.insert(est.p, dep["dirs"], dep["dist"], dep["max"])
+                hit = np.isfinite(dep["dist"]) & (dep["dist"] < dep["max"] - 1e-3)
+                self._depth_pts = (d.p + dep["dirs"][hit] * dep["dist"][hit, None]).round(1)
+        elif "rays" in r:
             down = next(x for x in r["rays"] if x["label"] == "down")
             est.range_down(down["dist"], self.world.surface(est.p[0], est.p[1]))
         if m.phase == "aterrizaje" and d.on_ground:
@@ -140,7 +170,11 @@ class Simulation:
         if m.phase in ("crucero", "carrera", "persecución", "reintento"):
             # altura mínima sobre la superficie (debajo y 0,8 s por delante): no rozar el borde de una meseta
             ahead = est.p + est.v * 0.8
-            floor = max(self.world.surface(est.p[0], est.p[1]), self.world.surface(ahead[0], ahead[1])) + 1.0
+            if self.map is None:
+                floor = max(self.world.surface(est.p[0], est.p[1]), self.world.surface(ahead[0], ahead[1])) + 1.0
+            else:  # la superficie que ha visto (debajo, y delante hasta 2 m por encima de su altura)
+                floor = max(self.map.surface(est.p[0], est.p[1], est.p[2]),
+                            self.map.surface(ahead[0], ahead[1], est.p[2] + 2.0)) + 1.0
             if p_ref[2] < floor:
                 p_ref = p_ref.copy()
                 p_ref[2] = floor
@@ -161,6 +195,7 @@ class Simulation:
         if yaw_ref is not None:
             d.cmd_yaw = yaw_ref
         speed = math.hypot(d.v[0], d.v[1])
+        self.distance += float(np.linalg.norm(d.v)) * DT
         self.max_speed = max(self.max_speed, speed)
         if self.t - self._last_hist >= 0.1:
             self._last_hist = self.t
@@ -200,7 +235,19 @@ class Simulation:
             "battery": self.battery(), "power_w": d.power(), "replans": m.replans,
             "pad": m.pad.round(3).tolist(), "pad_est": m.pad_est.round(3).tolist(),
             "max_speed": self.max_speed, "rejected": self.est.rejected, "ekf_resets": self.est.resets,
+            "distance": self.distance, "map_mode": self.config["map_mode"],
         }
+        if self.map is not None:
+            out["map_replans"] = m.map_replans
+            out["explored"] = self.map.explored_fraction()
+            out["blocked"] = m.blocked is not None
+            if self._depth_pts is not None:
+                out["depth_pts"] = self._depth_pts.tolist()
+                self._depth_pts = None
+            # el mapa entero, como mucho una vez por segundo y solo si ha cambiado
+            if full or (self.map.version != self._map_sent and self.t - self._map_sent_t >= 1.0) or self.done:
+                out["map"] = self.map.to_dict()
+                self._map_sent, self._map_sent_t = self.map.version, self.t
         if full:
             out["world"] = self.world.to_dict()
             out["profile"] = self.prof.to_dict()

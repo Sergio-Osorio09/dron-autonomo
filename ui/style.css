@@ -169,3 +169,5 @@ kbd { font: 12px Consolas, monospace; background: var(--surface-2); border: 1px 
 .charts canvas { width: 100%; display: block; border-radius: 8px; background: var(--surface-2); }
 ol.rules { padding-left: 20px; }
 .pill.ok { background: rgba(31, 157, 99, .15); color: var(--good); }
+.legend i.grad-map { width: 30px; height: 8px; background: linear-gradient(90deg, #7c3aed, #2563eb, #14b8a6, #84cc16, #f59e0b); }
+.legend .map-only.hidden { display: none; }

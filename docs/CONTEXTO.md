@@ -16,13 +16,14 @@ sensores con ruido → estimación (Kalman) → [mapa] → misión → planifica
 | Física | `dron/dynamics.py` | Masa puntual con actitud; arrastre deducido de v_max; inercia de motores y actitud | Modelo de simuladores de planificación (FAST Lab, Flightmare) |
 | Mundo | `dron/world.py` | Terreno con relieve (mapa de alturas), obstáculos apoyados en él, densidad, meta en suelo/azotea/cima/aire | — |
 | Viento | `dron/wind.py` | Medio + cizalladura logarítmica + turbulencia **Dryden** + estelas de abrigo tras obstáculos y relieve, aceleración sobre azoteas y cimas | MIL-F-8785C / MIL-HDBK-1797; modelos de estela simplificados (no CFD) |
-| Sensores | `dron/sensors.py` | IMU, GPS con deriva, barómetro, brújula, 40 telémetros, cámara inferior; la lluvia degrada alcance y precisión | Ruidos tipo EKF2 de PX4 |
+| Sensores | `dron/sensors.py` | IMU, GPS con deriva, barómetro, brújula, 40 telémetros, cámara inferior y (fase 2) **cámara de profundidad** de 24 × 14 rayos; la lluvia degrada alcance y precisión | Ruidos tipo EKF2 de PX4; campo de visión de la Intel RealSense D435 |
+| Mapa (fase 2) | `dron/mapping.py` | **Mapa de ocupación 3D con log-odds** (vóxeles de 1 m) construido desde la posición estimada; suposición 2,5D; **ESDF** con transformada de distancia exacta; lo desconocido es libre para planificar | OctoMap (parámetros de octomap_server), Voxblox/FIESTA, Fast-Planner/EGO-Planner |
 | Estimación | `dron/estimator.py` | Filtro de Kalman de 9 estados con puertas de innovación | EKF2 de PX4 |
-| Planificación | `dron/planning.py` | Campo de distancias + **A\*** + estirado de cuerda + Chaikin + perfil de velocidad óptimo en tiempo | Voxblox/FIESTA (ESDF), Theta*, TOPP |
+| Planificación | `dron/planning.py` | Campo de distancias + **A\*** + estirado de cuerda + Chaikin + perfil de velocidad óptimo en tiempo; funciona igual con el mundo conocido o con el mapa aprendido | Voxblox/FIESTA (ESDF), Theta*, TOPP |
 | Control | `dron/control.py` | Cascada posición → velocidad (PID) → aceleración → inclinación y empuje; **Collision Prevention** | `mc_pos_control` y CollisionPrevention de PX4 |
 | Objetivo móvil | `dron/target.py` | Vehículo que recorre el terreno (suave, medio, rápido, variable); **filtro de Kalman de velocidad constante** para seguirlo; **punto de intercepción** | Seguimiento de blancos y guiado con adelanto (lead pursuit) |
-| Misión | `dron/mission.py` | Modo **aterrizar** (despegue → crucero → aproximación → aterrizaje de precisión) o **carrera** (cruzar la meta sin frenar); velocidad limitada por el alcance de los sensores; margen según la incertidumbre del filtro | Modos Takeoff/Mission/Land e IR-LOCK de PX4 |
-| Simulación | `dron/sim.py` | Bucle a 200 Hz que une todo | — |
+| Misión | `dron/mission.py` | Con mapa desconocido, comprueba la trayectoria cada vez que cambia el mapa y **replanifica** sin frenar; si no hay camino, espera y reintenta. Modo **aterrizar** (despegue → crucero → aproximación → aterrizaje de precisión) o **carrera** (cruzar la meta sin frenar); velocidad limitada por el alcance de los sensores; margen según la incertidumbre del filtro | Modos Takeoff/Mission/Land e IR-LOCK de PX4 |
+| Simulación | `dron/sim.py` | Bucle a 200 Hz que une todo; `map_mode` = `conocido` (fase 1) o `desconocido` (fase 2) | — |
 
 ## 2. Datos reales usados (y lo estimado)
 
@@ -38,6 +39,12 @@ Todos están en `dron/params.py`, con fuente:
   cabeceo 300°/s, 2 × 263,2 Wh / 55 min, RTK ±0,1 m, detección de obstáculos hasta 40 m.
 - **Estimado** (no lo publica el fabricante): relación empuje/peso, tamaño, constantes de tiempo de motores y
   actitud, inclinación máxima del Mini (35°), velocidad de crucero autónoma del Mini y del Matrice.
+- **Mapa (fase 2)**: cámara de profundidad con el campo de visión de la Intel RealSense D435 (87° × 58°, hoja de
+  datos) y error del 2 % (D435: < 2 % a 2 m); su alcance es el del perfil (el Matrice 350 detecta obstáculos
+  hasta 40 m). Mapa con los parámetros por defecto de octomap_server: acierto 0,7, fallo 0,4, límites 0,12 y 0,97.
+  **Estimado:** la resolución de la cámara (24 × 14 rayos, submuestreada para que Python vaya en tiempo real), el
+  3 % de píxeles sin dato y que el error de la cámara crezca linealmente con la distancia (en una estéreo real
+  crece con el cuadrado).
 - El **arrastre** no se inventa: a velocidad máxima con la inclinación máxima, el empuje horizontal iguala al
   arrastre, así que `k = g·tan(inclinación) / v_max²`. Un test comprueba que cada perfil alcanza su v_max real.
 
@@ -84,10 +91,53 @@ Todos están en `dron/params.py`, con fuente:
     conexiones persistentes, así que los pasos lentos ya no se ven. (c) Calidad gráfica adaptativa: por debajo de
     ~35 fps baja la resolución interna y la de las sombras.
 
+## 3b. Lecciones de la fase 2 (mapa desconocido)
+
+1. **Obstáculos fantasma a 15 m que convertían el cielo en una columna sólida.** Un rayo sin eco devolvía el
+   alcance máximo *más ruido*, así que la mitad de las veces parecía un eco justo antes del alcance. Con la
+   suposición 2,5D, todo lo que quedaba debajo pasaba a ser sólido, incluido el propio dron: se quedaba atascado
+   o subía sin parar. Un sensor real dice "sin retorno", no da una distancia con ruido. Ahora es así.
+2. **El suelo llano no aparecía en el mapa.** Los ecos del suelo a z = 0 con ruido negativo quedaban fuera de la
+   rejilla y se descartaban. Ahora se llevan a la primera capa.
+3. **Celdas ocupadas en parte.** Un árbol que ocupa media celda puede quedar marcado como libre, porque los rayos
+   que pasan por el hueco la vacían (es lo que ocurre también en OctoMap). El 84 % de los ecos cae en una celda
+   ocupada y el 98 % a menos de una celda de una; por eso la holgura resta media celda y se mantiene Collision
+   Prevention, que usa las distancias de los telémetros sin pasar por el mapa.
+4. **Sin mapa del terreno, el telémetro inferior no da la altura absoluta.** Solo da la distancia a lo que hay
+   debajo. Con mapa desconocido, la altura sale del GPS y del barómetro (como en PX4 sin estimación del terreno). Por
+   eso el aterrizaje baja, como el modo Land de PX4, hasta que el dron toca: la referencia puede quedar hasta 1,5 m
+   por debajo de la plataforma. Antes paraba a 0,5 m y, con la altura estimada algo alta, se habría quedado
+   flotando.
+5. **D\* Lite no hace falta aquí.** Una replanificación completa (A\* + suavizado + perfil) tarda 15 ms de
+   mediana y 19 ms como máximo (medido en bosque extremo, ciudad y montaña). D\* Lite reaprovecha la búsqueda
+   anterior, pero cada celda nueva cambia la holgura de todas las cercanas, y en Python cada nodo es más lento. Con
+   estos tiempos, A\* desde cero es lo más sencillo y rápido.
+6. **Replanificar en bucle junto a un obstáculo recién visto.** Si el dron ve algo muy cerca, cualquier
+   trayectoria nueva empieza dentro de su margen y la comprobación la rechazaría una y otra vez. Por eso la
+   comprobación ignora el primer metro alrededor del dron (de eso se encarga Collision Prevention).
+7. **Persiguiendo un objetivo, la línea de visión salía siempre "bloqueada" con el mapa aprendido.** La puerta va
+   a 1 m del vehículo y el dron vuela a su altura; con celdas de 1 m, el suelo aprendido quita holgura a los dos
+   extremos del segmento. El dron no pasaba a persecución predictiva y replanificaba detrás del objetivo (hasta
+   67 s). Ahora se comprueba solo el tramo intermedio con radio + 0,3 m, suficiente para ver si hay un árbol o un
+   edificio en medio. La carrera contra el objetivo rápido es muy variable en los dos modos: con 9 vuelos, el PX4
+   tardó 32 s de media con mapa conocido y 21,5 s con desconocido.
+8. **Hueco de la fase 1 que ha salido a la luz: descender sobre la copa de un árbol.** El anillo de telémetros es
+   horizontal y el rayo inferior no cuenta en Collision Prevention (para poder aterrizar). Un dron que vuela a
+   8,4 m y baja despacio sobre un árbol de 8,3 m no lo ve. Con el cambio del sensor sin eco (lección 1), un vuelo
+   de carrera con mapa conocido (PX4, objetivo suave, mixto, semilla 500) cambió lo justo para caer en él. Está
+   pendiente (ver sección 6).
+
 ## 4. Resultados
 
 Ver `eval/resultados.md` (3 drones × 16 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera y
-objetivo en movimiento).
+objetivo en movimiento; cada uno con mapa conocido y desconocido).
+
+- **Mapa desconocido: 46 de 48 combinaciones al 100 %** (mapa conocido: 44 de 48). Solo falla el PX4 con viento de
+  10 m/s, que es su límite en los dos modos.
+- **Coste de no conocer el mundo:** en las 44 combinaciones que los dos modos completan al 100 %, el tiempo medio pasa
+  de 21,2 s a 22,2 s (+5 %). Las mayores diferencias están en las carreras contra objetivos rápidos, que son muy
+  variables en los dos modos (lección 3b.7).
+- Replanificaciones por el mapa: de media entre 0,3 y 29 por vuelo (más en persecuciones). Cada una tarda ~15 ms.
 
 ## 5. Fases del proyecto
 
@@ -96,7 +146,7 @@ objetivo en movimiento).
 | **1 (hecha)** | Física realista, viento, sensores con ruido, estimación, control, planificación y misión con mapa conocido | Dryden, EKF, cascada PX4, A*, TOPP, Collision Prevention |
 | **1b (hecha)** | Terreno con relieve y precipicios, densidad, viento que interactúa con obstáculos, lluvia, meta en azotea/cima/aire, modo carrera | Mapa de alturas, estelas de viento, límite de velocidad por alcance de sensores, márgenes según la covarianza |
 | **1c (hecha)** | Carrera contra un objetivo en movimiento (suave, medio, rápido, variable) | Kalman de velocidad constante, punto de intercepción, persecución predictiva con línea de visión, geovalla |
-| 2 | El dron construye su mapa con sensores ruidosos (ya no conoce el mundo); replanificación; trayectorias B-spline | Mapa de ocupación / ESDF, **D\* Lite**, B-splines tipo **EGO-Planner** |
+| **2 (hecha)** | El dron construye su mapa con sensores ruidosos (ya no conoce el mundo); replanificación. Pendiente: trayectorias B-spline | Mapa de ocupación con log-odds (OctoMap), ESDF, A\* con replanificación (D\* Lite descartado, ver 3b.5); B-splines tipo **EGO-Planner** pendientes |
 | 3 | Misión de búsqueda: meta desconocida, cámara con cono y oclusión, zona designada, niebla de guerra y mapa de calor | **Búsqueda bayesiana**, exploración por fronteras (**FUEL**), cobertura boustrophedon |
 | 4 | Objetivo que HUYE del dron y se esconde tras edificios (el seguimiento de objetivos móviles ya existe desde la 1c) | Persecución-evasión, búsqueda desde la última posición vista |
 | 5 | Varios drones que se reparten la búsqueda (activable) | Subastas **CBBA** / algoritmo húngaro, **Voronoi**, **ORCA** |
@@ -104,38 +154,44 @@ objetivo en movimiento).
 
 ## 6. Estado actual y cómo continuar (para un chat nuevo)
 
-**Estado:** la fase 1 (con 1b y 1c) está terminada. 18 tests en verde; `eval/resultados.md` con 3 drones × 16
-escenarios (45 de 48 al 100 %). Repositorio privado: https://github.com/Sergio-Osorio09/dron-autonomo (rama `main`).
+**Estado:** fases 1 (con 1b y 1c) y 2 terminadas; de la fase 2 solo faltan las trayectorias B-spline. 23 tests en
+verde. `eval/resultados.md` compara los dos modos de mapa (3 drones × 16 escenarios × mapa conocido/desconocido):
+46 de 48 combinaciones al 100 % con mapa desconocido y 44 de 48 con conocido. Repositorio privado:
+https://github.com/Sergio-Osorio09/dron-autonomo (rama `main`).
 Comandos: `python -m pytest -q`, `python server.py` (http://127.0.0.1:7873) y
-`python eval/eval_headless.py --flights 1 --md eval/resultados.md` (~10 min).
+`python eval/eval_headless.py --flights 1 --md eval/resultados.md` (~20 min con los dos modos; `--maps desconocido`
+para uno solo).
 
-**Pendientes conocidos de la fase 1** (opcionales, no bloquean la fase 2):
+**Cómo funciona la fase 2** (detalle en el docstring de `dron/mapping.py`):
+- `Simulation(map_mode="desconocido")` crea `sim.map` (OccupancyMap) y activa la cámara de profundidad. Cada barrido
+  (telémetros a 20 Hz, cámara a 10 Hz) se inserta desde `est.p`. La interfaz arranca en este modo.
+- `Mission._space()` devuelve el ESDF aprendido (`map.grid()`, recalculado solo si cambió el mapa) o el mundo real.
+  `planning.plan` y `segment_clear` aceptan cualquiera de los dos.
+- Cada 0,2 s, si el mapa cambió, `Mission._still_clear` comprueba la trayectoria restante; si choca, replanifica
+  desde la posición estimada con la velocidad actual. Sin camino: espera en el sitio y reintenta cada 0,5 s.
+- La altura mínima de crucero sale de `map.surface`; el telémetro inferior ya no corrige la altura absoluta;
+  el objetivo móvil da su altura por GNSS.
+- `make_flyable_world` sigue usando el mundo real (solo para generar un mundo con camino) y la física, los sensores,
+  el viento y la evaluación también: son "la realidad".
+
+**Pendientes** (opcionales):
+- Fase 2: trayectorias locales suaves con B-splines tipo EGO-Planner (ahora: A* + estirado + Chaikin + TOPP).
+- **Collision Prevention no ve hacia abajo en crucero** (lección 3b.8): descender sobre la copa de un árbol puede
+  acabar en choque. Idea: en crucero, usar el rayo inferior solo para limitar la bajada, con una distancia de
+  seguridad pequeña (radio + 0,3 m) para no estorbar al aterrizaje ni a la puerta de meta.
+- **El planificador y Collision Prevention no usan el mismo límite de velocidad.** El plan usa
+  √(2·a·(alcance − radio − 1)) y Collision Prevention frena con a/2 y más distancia de seguridad. El dron se queda
+  atrás de la referencia, se desvía más de 3 m y replanifica (~8 veces por vuelo incluso sin ruido ni viento).
+  Unificarlos daría trayectorias más fieles, pero cambia los resultados de la fase 1.
 - El tirón (jerk) del perfil de velocidad es aproximado (suavizado), no una curva en S exacta.
 - PX4 genérico con viento de 10 m/s: aterriza a ~1 m de la plataforma o choca con ráfagas fuertes (está en su límite).
-- Matrice en bosque de densidad extrema con viento: 1 choque de 3.
 - La batería se gasta, pero no hay "volver a casa con batería baja" (RTL por batería, como PX4).
+- Con mapa desconocido la carrera contra objetivos rápidos es muy variable (15-40 s), igual que con mapa conocido.
 - Idea descartada por ahora: modo "carrera sin red" que ignore el límite de velocidad por alcance de sensores.
 
-**Qué partes CONOCEN EL MAPA hoy (lo que la fase 2 tiene que cambiar):**
-- `planning.ClearanceGrid(world)` se construye con TODOS los obstáculos y el terreno (`sim.py`, `make_flyable_world`).
-- `Mission` planifica con esa rejilla completa (`plan(...)`), y también la replanificación hacia objetivos móviles.
-- `estimator.range_down(dist, world.surface(...))` usa el mapa del terreno para convertir la distancia en altura.
-- `sim._tick` usa `world.surface` para la altura mínima en crucero.
-- La física, los sensores, la evaluación y el viento SÍ pueden usar el mundo real: son "la realidad", no el dron.
-
-**Plan propuesto para la fase 2 (mapa desconocido):**
-1. `dron/mapping.py`: mapa de ocupación 3D con log-odds (vóxeles de 0,5-1 m, como OctoMap) que se actualiza con los
-   40 telémetros ruidosos (raycasting: celdas libres a lo largo del rayo y ocupada al final). El terreno también se
-   aprende (el rayo inferior y los inclinados).
-2. Campo de distancias (ESDF) incremental sobre ese mapa, para la holgura. Lo desconocido se trata de forma
-   optimista para planificar lejos (como hacen los planificadores de exploración) y como obstáculo muy cerca.
-3. Replanificación cuando el mapa invalida la trayectoria: A* incremental o **D\* Lite**; trayectorias locales
-   suaves con B-splines tipo **EGO-Planner** si da tiempo.
-4. Cambiar `Mission` y `sim` para usar el mapa aprendido en lugar de `ClearanceGrid(world)`. Mantener una opción
-   "mapa conocido" para comparar.
-5. Interfaz: dibujar el mapa que va construyendo el dron (vóxeles ocupados y zona explorada) frente al mundo real.
-6. Evaluación: los mismos escenarios con mapa conocido y desconocido (éxito, tiempo, distancia recorrida,
-   replanificaciones). Tests: el mapa converge al mundo real y no hay choques contra obstáculos no vistos.
+**Siguiente: fase 3** (misión de búsqueda). Ya existe la base: el mapa de ocupación, la niebla de lo no explorado
+(`map.seen`) y la cámara de profundidad. Falta la cámara con cono y oclusión para *detectar* el objetivo, el mapa de
+probabilidad (búsqueda bayesiana) y la exploración por fronteras (FUEL) sobre `map.seen`.
 
 **Preferencias del usuario:** todo en español; algoritmos que se usen en drones reales y datos reales con su fuente;
 que se vea bien en pantalla; medir antes de afirmar (tests y evaluación tras cada cambio); explicar las decisiones.

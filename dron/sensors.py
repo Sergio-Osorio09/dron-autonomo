@@ -10,6 +10,11 @@
     telémetros          20 Hz        40 rayos (36 en anillo cada 10°, arriba, abajo, 2 al frente); ruido 2 % + 2 cm;
                                      con 30° entre rayos se colaban troncos finos entre dos lecturas;
                                      un 2 % de lecturas perdidas (devuelven el alcance máximo)
+    cámara de           10 Hz        24 × 14 rayos en un cono de 87° × 58° hacia donde mira el dron (el campo de visión
+    profundidad                      de la Intel RealSense D435, la cámara que usan EGO-Planner y los drones del FAST
+                                     Lab); alcance el del perfil; ruido 2 % + 2 cm (D435: error < 2 % a 2 m); un 3 %
+                                     de píxeles sin dato (se descartan, no se toman como "libre"). Es lo que usa el
+                                     dron para CONSTRUIR SU MAPA en la fase 2 (junto con los 40 telémetros).
     cámara inferior     20 Hz        posición relativa de la plataforma (aterrizaje de precisión, como el
                                      IR-LOCK de PX4) si está a menos de 5 m en horizontal y 10 m por encima; σ 5 cm
 
@@ -27,6 +32,8 @@ NOISE_LEVELS = {"ideal": 0.0, "realista": 1.0, "alto": 2.0}
 RAIN = {"no": dict(range=1.0, noise=1.0, drop=0.0, gps=1.0, cam=5.0, drag=1.0),
         "moderada": dict(range=0.7, noise=1.5, drop=0.05, gps=1.2, cam=4.0, drag=1.08),
         "fuerte": dict(range=0.5, noise=2.0, drop=0.12, gps=1.4, cam=3.0, drag=1.15)}
+DEPTH_HFOV, DEPTH_VFOV = 87.0, 58.0   # Intel RealSense D435, hoja de datos (campo de visión de profundidad)
+DEPTH_COLS, DEPTH_ROWS, DEPTH_HZ = 24, 14, 10.0
 RING = [a if a <= 180 else a - 360 for a in range(0, 360, 10)]  # 36 rayos cada 10° (PX4 usa 72 sectores de 5°)
 
 
@@ -41,6 +48,15 @@ def ray_dirs(yaw: float):
         e = math.radians(el)
         out.append((name, (math.cos(yaw) * math.cos(e), math.sin(yaw) * math.cos(e), math.sin(e))))
     return out
+
+
+def depth_dirs(yaw: float) -> np.ndarray:
+    """Direcciones de los píxeles (submuestreados) de la cámara de profundidad, que mira al frente y nivelada
+    (estabilizada: se ignora la inclinación del dron)."""
+    az = np.radians(np.linspace(-DEPTH_HFOV / 2, DEPTH_HFOV / 2, DEPTH_COLS)) + yaw
+    el = np.radians(np.linspace(-DEPTH_VFOV / 2, DEPTH_VFOV / 2, DEPTH_ROWS))
+    A, E = np.meshgrid(az, el, indexing="ij")
+    return np.stack([np.cos(A) * np.cos(E), np.sin(A) * np.cos(E), np.sin(E)], axis=-1).reshape(-1, 3)
 
 
 class GaussMarkov:
@@ -67,9 +83,11 @@ class Sensors:
         self.gps_drift = GaussMarkov(0.8 * profile.gps_sigma * m, 30.0, self.rng)
         self.baro_drift = GaussMarkov(0.3 * m, 60.0, self.rng, dim=1)
         self.t = 0.0
-        self.next = {"gps": 0.0, "baro": 0.0, "rng": 0.0}
+        self.next = {"gps": 0.0, "baro": 0.0, "rng": 0.0, "depth": 0.0}
+        self.np_rng = np.random.default_rng(seed)
         self.last_gps: Optional[np.ndarray] = None
         self.last_rays: List[Dict] = []
+        self.depth_on = False   # la cámara de profundidad solo hace falta para construir el mapa (fase 2)
 
     def _n(self, sigma: float) -> float:
         return self.rng.gauss(0, sigma * self.m) if self.m > 0 else 0.0
@@ -106,10 +124,27 @@ class Sensors:
                 if self.rng.random() < 0.02 * self.m + self.rain["drop"]:
                     meas = rmax  # lectura perdida
                 meas = float(np.clip(meas, 0.0, rmax))
+                if true >= rmax - 1e-6:
+                    meas = rmax  # sin eco: el sensor dice "nada dentro del alcance", no una distancia con ruido
                 rays.append({"label": label, "dir": d, "dist": meas, "true": true})
             out["rays"] = rays
             self.last_rays = rays
             rel = np.array([pad[0] - p[0], pad[1] - p[1]])
             if np.linalg.norm(rel) < self.rain["cam"] and 0 < p[2] - pad[2] < 10.0:
                 out["pad_rel"] = rel + np.array([self._n(0.05), self._n(0.05)])
+        if self.depth_on and t >= self.next["depth"]:
+            self.next["depth"] = t + 1.0 / DEPTH_HZ
+            out["depth"] = self.depth(p, yaw, world)
         return out
+
+    def depth(self, p, yaw, world) -> Dict:
+        """Imagen de profundidad: direcciones y distancias medidas (NaN = píxel sin dato)."""
+        D = depth_dirs(yaw)
+        rmax = self.range
+        true = world.rays(p, D, rmax)
+        g = self.np_rng
+        meas = true + g.normal(0, 1, len(D)) * (0.02 * true + 0.02) * self.rain["noise"] * self.m
+        meas = np.clip(meas, 0.0, rmax)
+        meas[true >= rmax - 1e-6] = rmax      # nada dentro del alcance
+        meas[g.random(len(D)) < 0.03 * self.m + self.rain["drop"]] = np.nan
+        return {"dirs": D, "dist": meas, "max": rmax}

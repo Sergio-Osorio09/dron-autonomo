@@ -250,6 +250,59 @@ class World:
             best = ob.ray(o, d, best)
         return best
 
+    def rays(self, o, dirs: np.ndarray, tmax: float, step: float = 0.3) -> np.ndarray:
+        """Muchos rayos a la vez desde el mismo origen (misma geometría que `ray`, vectorizada con numpy).
+        Es lo que necesita una cámara de profundidad: cientos de rayos por imagen."""
+        o = np.asarray(o, float)
+        D = np.asarray(dirs, float)
+        best = self._rays_terrain(o, D, tmax, step)
+        cyl = [ob for ob in self.obstacles if isinstance(ob, Cylinder)]
+        box = [ob for ob in self.obstacles if isinstance(ob, Box)]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if cyl:
+                cx, cy, r, b, top = (np.array([getattr(c, k) for c in cyl])[None, :] for k in ("x", "y", "r", "base", "top"))
+                dx, dy, dz = D[:, 0:1], D[:, 1:2], D[:, 2:3]
+                ox, oy = o[0] - cx, o[1] - cy
+                a = dx ** 2 + dy ** 2
+                bb = ox * dx + oy * dy
+                disc = bb * bb - a * (ox * ox + oy * oy - r ** 2)
+                t = (-bb - np.sqrt(np.maximum(disc, 0))) / np.where(a > 1e-12, a, np.nan)
+                z = o[2] + t * dz
+                side = np.where((a > 1e-12) & (disc >= 0) & (t >= 0) & (z >= b) & (z <= top), t, np.inf)
+                tc = (top - o[2]) / np.where(np.abs(dz) > 1e-12, dz, np.nan)
+                px, py = ox + tc * dx, oy + tc * dy
+                cap = np.where((tc >= 0) & (px * px + py * py <= r ** 2), tc, np.inf)
+                best = np.minimum(best, np.nanmin(np.minimum(side, cap), axis=1))
+            if box:
+                lo = np.array([[bx.x0, bx.y0, bx.base] for bx in box])[None]   # 1 × M × 3
+                hi = np.array([[bx.x1, bx.y1, bx.top] for bx in box])[None]
+                Dn = D[:, None, :]
+                par = np.abs(Dn) < 1e-12
+                t1, t2 = (lo - o) / np.where(par, np.nan, Dn), (hi - o) / np.where(par, np.nan, Dn)
+                tn = np.where(par, -np.inf, np.minimum(t1, t2))
+                tf = np.where(par, np.inf, np.maximum(t1, t2))
+                outside = (par & ((o < lo) | (o > hi))).any(axis=2)
+                tmin, tmx = np.maximum(tn.max(axis=2), 0.0), tf.min(axis=2)
+                hit = ~outside & (tmin <= tmx)
+                best = np.minimum(best, np.where(hit, tmin, np.inf).min(axis=1))
+        return np.minimum(best, tmax)
+
+    def _rays_terrain(self, o, D, tmax, step):
+        n = int(tmax / step) + 1
+        t = np.linspace(0, tmax, n)[None, :]
+        X, Y, Z = o[0] + D[:, 0:1] * t, o[1] + D[:, 1:2] * t, o[2] + D[:, 2:3] * t
+        gap = Z - self.terrain.heights(X, Y)          # > 0 por encima del terreno
+        below = gap < 0
+        k = np.argmax(below, axis=1)
+        anyb = below.any(axis=1)
+        out = np.full(len(D), float(tmax))
+        rows = np.nonzero(anyb & (k > 0))[0]
+        kk = k[rows]
+        z0, z1 = gap[rows, kk - 1], gap[rows, kk]
+        out[rows] = t[0, kk - 1] + (t[0, kk] - t[0, kk - 1]) * z0 / (z0 - z1)
+        out[anyb & (k == 0)] = 0.0
+        return out
+
     def ray_terrain(self, o: Vec, d: Vec, tmax: float, step: float = 0.3) -> float:
         n = int(tmax / step) + 1
         t = np.linspace(0, tmax, n)

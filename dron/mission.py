@@ -22,6 +22,12 @@ CARRERA     en tierra → despegue → carrera → [persecución] → meta
     a PERSECUCIÓN PREDICTIVA: apunta a la posición predicha 0,5 s por delante y va a la velocidad del objetivo más
     una velocidad de cierre, hasta cruzar la puerta que lleva encima.
 
+MAPA DESCONOCIDO (fase 2, `mapper` = mapping.OccupancyMap): el dron planifica sobre el mapa que va construyendo
+con sus sensores, tratando lo que aún no ha visto como libre. Cada vez que el mapa cambia (hasta 5 veces por segundo)
+comprueba si lo que queda de trayectoria sigue libre; si no, replanifica desde donde está sin frenar. Si no encuentra
+camino, se queda quieto en el sitio y vuelve a intentarlo cada medio segundo (mientras mira alrededor, el mapa
+mejora). La altura del objetivo en movimiento sale de su GNSS, no del mapa del terreno.
+
 En ambos modos la velocidad se limita a la que permite frenar dentro del alcance de los telémetros
 (v ≤ √(2·a·(alcance − radio − 1 m))): la regla de oro de los drones autónomos. Con lluvia el alcance baja y el dron
 vuela más despacio; en carrera, un dron con sensores de 12 m no puede ir a 14 m/s.
@@ -30,7 +36,7 @@ import math
 
 import numpy as np
 
-from .planning import plan, segment_clear
+from .planning import MARGIN, plan, segment_clear
 from .target import TargetTracker, intercept_point
 
 CRUISE_AGL = 2.5
@@ -40,7 +46,8 @@ MODES = ("aterrizar", "carrera")
 
 
 class Mission:
-    def __init__(self, world, grid, prof, precision: bool = True, mode: str = "aterrizar", sensor_range: float = None):
+    def __init__(self, world, grid, prof, precision: bool = True, mode: str = "aterrizar", sensor_range: float = None,
+                 mapper=None):
         if mode not in MODES:
             raise ValueError("Modo de misión desconocido %r" % mode)
         self.world, self.grid, self.prof, self.precision, self.mode = world, grid, prof, precision, mode
@@ -64,6 +71,13 @@ class Mission:
         self.plan_error = None
         self.est = None       # filtro de Kalman (lo asigna la simulación): su covarianza fija el margen de seguridad
         self.margin = 0.6
+        self.map = mapper     # None: mapa conocido (fase 1)
+        self.map_checked = -1
+        self.check_t = -1.0
+        self.map_replans = 0
+        self.blocked = None   # punto donde espera si no encuentra camino
+        self.blocked_t = 0.0
+        self.target_z = None  # altura del objetivo según su GNSS
         # no volar más rápido de lo que dejan ver los sensores: poder frenar dentro del alcance de los telémetros
         rng = sensor_range or prof.sensor_range
         self.v_sense = math.sqrt(2 * prof.acc_hor * max(rng - prof.radius - 1.0, 1.0))
@@ -73,10 +87,25 @@ class Mission:
         if not self.moving:
             return self.gate
         p, _ = self.tracker.state_at(t)
+        if self.map is not None:
+            return np.array([p[0], p[1], (self.target_z if self.target_z is not None else self.world.goal[2]) + 1.0])
         return np.array([p[0], p[1], self.world.terrain.height(p[0], p[1]) + self.world.goal[2]
                          - self.world.terrain.height(*self.world.goal[:2]) + 1.0])
 
+    def _space(self):
+        """(espacio para comprobar segmentos, rejilla para A*): el mundo real o el mapa aprendido."""
+        if self.map is None:
+            return self.world, self.grid
+        g = self.map.grid()
+        return g, g
+
+    def _ground_z(self, x, y):
+        if self.map is None:
+            return self.world.terrain.height(x, y)
+        return (self.target_z if self.target_z is not None else self.world.goal[2]) - 0.6  # el vehículo mide 0,6 m
+
     def _plan(self, t, p_est):
+        space, grid = self._space()
         # margen que crece con la incertidumbre de posición del filtro (2 sigmas), como hacen los planificadores
         # que tienen en cuenta la covarianza
         sigma = math.sqrt(max(self.est.P[0, 0] + self.est.P[1, 1], 0.0)) if self.est is not None else 0.0
@@ -90,8 +119,8 @@ class Mission:
                 self.last_plan_t = t
                 old, old_t0 = self.traj, self.t0
                 for cand in (xy, p_t):  # si el punto de intercepción no es alcanzable, ir a por la posición actual
-                    goal = np.array([cand[0], cand[1], self.world.terrain.height(cand[0], cand[1]) + 2.0])
-                    self.traj = plan(self.world, self.grid, self.prof, p_est, goal, v, end, self.margin,
+                    goal = np.array([cand[0], cand[1], self._ground_z(cand[0], cand[1]) + 2.0])
+                    self.traj = plan(space, grid, self.prof, p_est, goal, v, end, self.margin,
                                      self.speed_now)
                     if self.traj is not None:
                         self.intercept = goal
@@ -106,7 +135,7 @@ class Mission:
         else:
             goal = np.array([self.pad_est[0], self.pad_est[1], self.pad_z + CRUISE_AGL])
             v, end = min(self.prof.v_cruise, self.v_sense), 0.0
-        new = plan(self.world, self.grid, self.prof, p_est, goal, v, end, self.margin, self.speed_now)
+        new = plan(space, grid, self.prof, p_est, goal, v, end, self.margin, self.speed_now)
         if new is None:
             if self.traj is None:  # ni siquiera hay un primer plan
                 self.plan_error = "sin camino"
@@ -117,19 +146,37 @@ class Mission:
         self.phase = "carrera" if self.mode == "carrera" else "crucero"
         return True
 
+    def _still_clear(self, t, est_p) -> bool:
+        """¿Lo que queda de trayectoria sigue libre en el mapa actual? Se ignora el primer metro alrededor del dron:
+        si acaba de ver un obstáculo muy cerca, replanificar desde ahí daría el mismo resultado una y otra vez
+        (de eso ya se encarga Collision Prevention)."""
+        tr = self.traj
+        i0 = int(np.searchsorted(tr.t, t - self.t0))
+        P = tr.P[i0:]
+        P = P[np.linalg.norm(P - est_p, axis=1) > self.prof.radius + 1.0]
+        if not len(P):
+            return True
+        return bool((self.map.grid().clearance_many(P) >= self.prof.radius + 0.5 * MARGIN).all())
+
     def reference(self, t, est_p, est_v, readings):
         """(p_ref, v_ref, a_ref, yaw_ref) para el control."""
         prof = self.prof
         self.speed_now = min(float(np.linalg.norm(est_v)), 0.9 * prof.v_max)
         if self.moving and "target" in readings:
             self.tracker.update(t, readings["target"])
+            if "target_z" in readings:
+                self.target_z = readings["target_z"] if self.target_z is None else                     self.target_z + 0.2 * (readings["target_z"] - self.target_z)
         if "pad_rel" in readings and self.precision:  # la cámara ve la plataforma: mejor estimación relativa
             self.pad_est += (est_p[:2] + readings["pad_rel"] - self.pad_est) * 0.2
         zero = np.zeros(3)
         if self.phase == "en tierra":
             self.phase = "despegue"
             self.hold = est_p.copy()
-            self.hold_ground = self.world.surface(est_p[0], est_p[1])
+            if self.map is None:
+                self.hold_ground = self.world.surface(est_p[0], est_p[1])
+            else:  # sin mapa: el suelo está a lo que mide el telémetro inferior
+                down = [x["dist"] for x in readings.get("rays", []) if x["label"] == "down"]
+                self.hold_ground = est_p[2] - (down[0] if down else 0.0)
             self.t0 = t
         if self.phase == "despegue":
             alt = 1.5 if self.mode == "carrera" else CRUISE_AGL
@@ -143,7 +190,21 @@ class Mission:
             gate = self.gate_at(t)
             if t - self.los_t > 0.2:  # ¿línea de visión libre hasta el objetivo? (5 veces por segundo)
                 self.los_t = t
-                self.los_clear = segment_clear(self.world, est_p, gate, self.prof.radius + 0.8, 0.4)
+                if self.map is None:
+                    self.los_clear = segment_clear(self.world, est_p, gate, self.prof.radius + 0.8, 0.4)
+                else:
+                    # la puerta va a 1 m del vehículo y el dron vuela a su altura: con celdas de 1 m, el suelo
+                    # aprendido les quita holgura a los dos extremos y la línea de visión saldría siempre
+                    # "bloqueada". Se comprueba el tramo intermedio (1 m tras el dron, 1,5 m antes de la puerta)
+                    # con radio + 0,3 m: basta para ver si hay un árbol o un edificio en medio.
+                    d = gate - est_p
+                    n = float(np.linalg.norm(d))
+                    if n < 3.0:
+                        self.los_clear = True
+                    else:
+                        u = d / n
+                        self.los_clear = segment_clear(self._space()[0], est_p + u, gate - 1.5 * u,
+                                                       self.prof.radius + 0.3, 0.4)
             if np.linalg.norm(gate[:2] - est_p[:2]) < 12.0 and self.los_clear:  # cerca y a la vista: persecución
                 self.phase = "persecución"
                 p_t, v_t = self.tracker.state_at(t + 0.5)
@@ -164,6 +225,21 @@ class Mission:
                     self._plan(t, est_p)
                 else:
                     self.last_plan_t = t
+        if self.blocked is not None and self.phase in ("crucero", "carrera"):  # sin camino: esperar y reintentar
+            if t - self.blocked_t > 0.5:
+                self.blocked_t = t
+                if self._plan(t, est_p):
+                    self.blocked = None
+            if self.blocked is not None:
+                return self.blocked, zero, zero, self.yaw
+        if self.phase in ("crucero", "carrera") and self.map is not None and t - self.check_t > 0.2                 and self.map.version != self.map_checked:
+            self.check_t, self.map_checked = t, self.map.version
+            if not self._still_clear(t, est_p):
+                self.replans += 1
+                self.map_replans += 1
+                if not self._plan(t, est_p):
+                    self.blocked, self.blocked_t = est_p.copy(), t
+                    return self.blocked, zero, zero, self.yaw
         if self.phase in ("crucero", "carrera"):
             p, v, a = self.traj.sample(t - self.t0)
             if np.linalg.norm(p - est_p) > 3.0:  # nos hemos desviado mucho: replanificar desde aquí
@@ -192,6 +268,8 @@ class Mission:
                 self.hold[2] = est_p[2]
                 self.t0 = t
                 return np.array([target[0], target[1], est_p[2]]), zero, zero, self.yaw
-            z = max(self.hold[2] - prof.land_speed * (t - self.t0), self.pad_z - 0.5)
+            # como el modo Land de PX4: baja a velocidad constante hasta que el detector de aterrizaje nota el suelo
+            # (la referencia puede quedar por debajo de la plataforma si la altura estimada va algo desviada)
+            z = max(self.hold[2] - prof.land_speed * (t - self.t0), self.pad_z - 1.5)
             return np.array([target[0], target[1], z]), np.array([0, 0, -prof.land_speed]), zero, self.yaw
         return est_p, zero, zero, self.yaw

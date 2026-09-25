@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from dron.mission import MODES
 from dron.params import PROFILES
 from dron.sensors import NOISE_LEVELS, RAIN
-from dron.sim import Simulation
+from dron.sim import MAP_MODES, Simulation
 from dron.target import MOTIONS
 from dron.world import DENSITIES, GOAL_KINDS, LEVELS, TERRAINS
 
@@ -51,7 +51,7 @@ class Session:
             collision_prevention=bool(cfg.get("collision_prevention", True)),
             terrain=cfg.get("terrain", "plano"), density=cfg.get("density", "normal"),
             goal_kind=cfg.get("goal_kind", "suelo"), mode=cfg.get("mode", "aterrizar"), rain=cfg.get("rain", "no"),
-            motion=cfg.get("motion", "fija"))
+            motion=cfg.get("motion", "fija"), map_mode=cfg.get("map_mode", "desconocido"))
         with self.lock:
             self.gen += 1
             self.sim, self.frames, self.clock, self._recorded = sim, [], 0.0, False
@@ -126,7 +126,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"profiles": {k: p.to_dict() for k, p in PROFILES.items()},
                                     "levels": list(LEVELS), "noise": list(NOISE_LEVELS), "terrains": list(TERRAINS),
                                     "densities": list(DENSITIES), "goal_kinds": list(GOAL_KINDS),
-                                    "modes": list(MODES), "rain": list(RAIN), "motions": list(MOTIONS)})
+                                    "modes": list(MODES), "rain": list(RAIN), "motions": list(MOTIONS),
+                                    "map_modes": list(MAP_MODES)})
         self._send(404, {"error": "No encontrado"})
 
     def do_POST(self):
