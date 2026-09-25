@@ -60,6 +60,7 @@ class PositionController:
         self.saturated = False
         self.cp_active = False
         self._cp_hits = 0
+        self.clear_ahead = 0.0   # m que el dron VE libres hasta la meta (sprint de carrera): amplían el límite global
 
     def reset(self):
         self.integ[:] = 0.0
@@ -70,7 +71,7 @@ class PositionController:
         # posición -> velocidad
         v_sp = v_ref + self.kp * (p_ref - p)
         if rays:
-            v_sp, a_ref = collision_prevention(v_sp, a_ref.copy(), rays, prof, v)
+            v_sp, a_ref = collision_prevention(v_sp, a_ref.copy(), rays, prof, v, self.clear_ahead)
             self.cp_active = self._cp_hits > 0
         else:
             self.cp_active = False
@@ -101,7 +102,7 @@ class PositionController:
         return t  # vector de empuje deseado (m/s²) en ejes del mundo
 
 
-def collision_prevention(v_sp, a_ref, rays, prof, v_now=None):
+def collision_prevention(v_sp, a_ref, rays, prof, v_now=None, clear_ahead: float = 0.0):
     """Limita la velocidad pedida en la dirección de cada rayo que ve un obstáculo cercano (PX4 CollisionPrevention).
 
     rays: [{"dir": (x, y, z), "dist": d, "label": ...}] de los telémetros (distancias medidas, con su ruido).
@@ -117,17 +118,30 @@ def collision_prevention(v_sp, a_ref, rays, prof, v_now=None):
     d_safe = prof.radius + cp_margin + cp_react * speed
     acc = P["cp_acc"] * prof.acc_hor  # frenada prudente: el dron tarda en responder (inercia de actitud y control)
     reach = max((r["dist"] for r in rays), default=prof.sensor_range)  # alcance efectivo (menor con lluvia)
-    v_cap = math.sqrt(2 * acc * max(reach - d_safe, 0.5))                # poder frenar dentro de lo que se ve
+    # poder frenar dentro de lo que se ve; en el sprint de carrera (clear_ahead = inf) no hay límite global: el
+    # pasillo hasta la meta se ve libre y la meta se cruza. Cada rayo sigue limitando hacia su obstáculo
+    v_cap = math.inf if clear_ahead == math.inf else math.sqrt(2 * acc * max(max(reach, clear_ahead) - d_safe, 0.5))
     n = np.linalg.norm(v_sp)
     if n > v_cap:
         v_sp = v_sp * (v_cap / n)
     active = []
     v_now = np.zeros(3) if v_now is None else np.asarray(v_now, float)
+    sprint = clear_ahead == math.inf
+    vdir = v_sp / n if n > 1e-6 else None
+    corridor = prof.radius + 0.6 + 0.05 * speed      # medio ancho del pasillo que barre el dron en el sprint
     for r in rays:
         u = np.array(r["dir"])
         own = r.get("d_safe")
         if (u[2] < -0.3 and own is None) or r["dist"] >= reach - 1e-6:
             continue
+        if sprint and own is None and vdir is not None:
+            # sprint de carrera: cada rayo es una pared perpendicular a él (el modelo de PX4, muy prudente: un
+            # árbol a 6 m y 30° del rumbo frenaba al dron de 15 a 7 m/s). Solo cuenta si el obstáculo está DENTRO
+            # del pasillo que va a barrer el dron (a menos de radio + 0,6 m + 0,05 s·v de su línea de avance)
+            q = u * r["dist"]
+            ahead = float(q @ vdir)
+            if ahead <= 0 or float(np.linalg.norm(q - ahead * vdir)) > corridor:
+                continue
         # el margen por tiempo de reacción solo cuenta con la velocidad HACIA ese obstáculo: si se aleja de un
         # edificio que acaba de pasar, no hay que "huir" de él (antes eso lo empujaba contra la pared de enfrente)
         safe = own if own is not None else prof.radius + cp_margin + cp_react * max(float(v_now @ u), 0.0)

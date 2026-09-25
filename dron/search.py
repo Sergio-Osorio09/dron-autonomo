@@ -7,8 +7,11 @@ Cámara de detección (la de la cámara principal, como la de un DJI Mini 3: cam
         píxeles = 1,5 m · f / distancia,   f = 320 / tan(41°) ≈ 368 px
         P(detección) = 0,9 · clip((píxeles − 12) / (32 − 12), 0, 1)
     → 0,9 hasta 17 m, 0 a partir de 46 m (32 px: tamaño fiable para un detector; 12 px: nada). ESTIMADO.
-  * 2 imágenes por segundo; un 1 % de las imágenes da una FALSA ALARMA en un punto al azar de lo que ve. La lluvia
-    reduce el alcance como el de los demás sensores.
+  * 10 imágenes por segundo (una OAK-D Lite ejecuta YOLOv6n a ~60 por segundo según Luxonis; 10 es prudente y deja
+    CPU): 2 → 10 acorta la búsqueda un 5 % (PX4, 40 semillas) y cuesta un 23 % más de cálculo. Un 1 % de las
+    imágenes da una FALSA ALARMA en un punto al azar de lo que ve. La lluvia reduce el alcance como el de los demás
+    sensores. (Las imágenes se tratan como independientes, como en la teoría de búsqueda de Koopman; con imágenes
+    muy seguidas es algo optimista.)
   Es un sensor: usa el mundo real (sensors.py lo simula con `detect`).
 
 Creencia (lo que sabe el dron), como en la búsqueda y rescate (teoría de búsqueda de Koopman; manual IAMSAR):
@@ -43,7 +46,8 @@ CAM_HALF_FOV = math.radians(82.1 / 2)   # DJI Mini 3: campo de visión 82,1°
 CAM_PITCH = math.radians(60.0)          # bajo el horizonte
 DET_F = 320.0 / math.tan(math.radians(41.0))
 PAD_SIZE = 1.5
-DET_HZ = 2.0
+DET_HZ = float(__import__("os").environ.get("DRON_DET_HZ", 10.0))
+CONFIRM_LOOKS = max(8, int(round(1.5 * DET_HZ)))   # imágenes de cerca sin confirmarla → falsa alarma (≥ 1,5 s)
 FALSE_ALARM = 0.01
 LANE = 12.0
 COVERED = 0.5
@@ -104,6 +108,9 @@ class Searcher:
         self.candidate: Optional[Dict] = None
         self.confirm_hits: List[np.ndarray] = []
         self.confirm_looks = 0
+        self.counted_hits = 0
+        self._hit_now = False
+        self.recent = []                        # detecciones sueltas recientes (glimpse, posición): M de N
         self.goal: Optional[np.ndarray] = None
         self.lanes: Dict[int, List[np.ndarray]] = {}   # franjas pendientes de cada dron (en enjambre, las suyas)
         self.lane_pass: Dict[int, int] = {}
@@ -123,14 +130,27 @@ class Searcher:
         """Una imagen de la cámara. `detection`: posición medida de la plataforma o None. En un enjambre, cada dron
         mira con su propia oclusión (`visible`) y la creencia es la de todos (`by` = quién mira)."""
         self.glimpses += 1
+        self._hit_now = False
         vis_fn = visible or self.visible
         if detection is not None:
             if self.candidate is not None and np.linalg.norm(detection[:2] - self.candidate["pos"][:2]) < 3.0:
                 self.confirm_hits.append(np.asarray(detection))
+                self._hit_now = True
             elif self.candidate is None:
-                self.candidate = {"pos": np.asarray(detection, float), "state": "pendiente", "by": by}
-                self.confirm_hits, self.confirm_looks = [np.asarray(detection)], 0
-                self.detections.append(self.candidate)
+                # M de N (como el seguimiento de blancos de un radar): una detección suelta no crea candidata; hace
+                # falta otra a menos de 3 m en las últimas imágenes (~0,5 s). A 10 imágenes por segundo, un 1 % de
+                # falsas alarmas por imagen es una cada 10 s: el dron las perseguía todas (30 en un vuelo) y no
+                # llegaba a encontrar la plataforma. La plataforma, que sale en el 90 % de las imágenes, no lo nota
+                d = np.asarray(detection, float)
+                window = max(2, int(round(0.5 * DET_HZ)))
+                self.recent = [(g, q) for g, q in self.recent if self.glimpses - g <= window]
+                prev = [q for _, q in self.recent if np.linalg.norm(q[:2] - d[:2]) < 3.0]
+                self.recent.append((self.glimpses, d))
+                if prev:
+                    self.candidate = {"pos": d, "state": "pendiente", "by": by}
+                    self.confirm_hits, self.confirm_looks, self.counted_hits = prev[-1:] + [d], 0, 0
+                    self.detections.append(self.candidate)
+                    self.recent = []
             return
         C = self.cells_xyz().reshape(-1, 3)
         rel = C - est_p
@@ -168,19 +188,26 @@ class Searcher:
         return float((self.Q < COVERED).mean())
 
     # ------------------------------------------------------------------ confirmación
-    def confirm_step(self):
-        """Cuenta una imagen durante la confirmación. Devuelve "confirmada", "falsa" o None (sigue mirando)."""
-        self.confirm_looks += 1
+    def confirm_step(self, counts: bool = True):
+        """Cuenta una imagen durante la confirmación. Devuelve "confirmada", "falsa" o None (sigue mirando).
+        `counts`=False: la imagen no cuenta como "mirada" (confirmando en vuelo, la detección aún está lejos o fuera
+        del cono: no verla no dice nada)."""
+        self.confirm_looks += 1 if counts else 0
+        self.counted_hits += 1 if counts and self._hit_now else 0
         # 3 detecciones que coinciden (a menos de 1,5 m de su mediana). Con 2 no basta: al mirar fijamente la
         # zona, dos falsas alarmas pueden caer en el mismo sitio (pasaba en ~1 de cada 20 búsquedas). Con la
         # plataforma de verdad, de cerca, la probabilidad por imagen es 0,9: 3 de 8 es casi seguro
         H = np.array(self.confirm_hits)
         near = H[np.linalg.norm(H[:, :2] - np.median(H[:, :2], axis=0), axis=1) < 1.5]
-        if len(near) >= 3:
+        # y vistas DE CERCA (en imágenes que "cuentan") al menos 3 veces y en al menos el 40 % de esas imágenes (la
+        # plataforma, de cerca, sale en el 90 %; una falsa alarma, en el 1 %). Sin esto, con 10 imágenes por
+        # segundo: acercándose desde lejos, o con 3 drones recién despegados mirando la misma zona pequeña, 3 falsas
+        # alarmas cayeron en el mismo sitio, se confirmaron y el dron aterrizó a 50 m de la plataforma
+        if len(near) >= 3 and self.counted_hits >= 3 and self.counted_hits >= 0.4 * self.confirm_looks:
             self.candidate["pos"] = near.mean(axis=0)
             self.candidate["state"] = "confirmada"
             return "confirmada"
-        if self.confirm_looks >= 8:           # 4 s mirándola de cerca sin confirmarla: falsa alarma
+        if self.confirm_looks >= CONFIRM_LOOKS:   # mirándola de cerca sin confirmarla: falsa alarma
             self.candidate["state"] = "falsa"
             self.candidate = None
             return "falsa"

@@ -26,7 +26,7 @@ nueva a la que ya seguía, como Fast-Planner y EGO-Planner.
 | Opción | Valores |
 |---|---|
 | Mapa | **Desconocido** (lo construye con sus sensores, fase 2) o **conocido** (fase 1, para comparar) |
-| Misión | **Aterrizar** en la meta o **Carrera** (cruzar la meta sin frenar; se guarda el mejor tiempo) |
+| Misión | **Aterrizar** en la meta o **Carrera** (cruzar la meta sin frenar; en cuanto ve la meta, **sprint a la velocidad máxima del fabricante**: 16 m/s el Mini 3, 23 m/s el Matrice 350, 12 m/s PX4; se guarda el mejor tiempo) |
 | Dron | Mini 3 (249 g) · genérico PX4 · Matrice 350 RTK |
 | Nivel y densidad | bosque / ciudad / mixto / **almacén** (interior, sin GPS) · densidad baja, normal, alta, extrema o máxima |
 | Terreno | plano · colinas · montañoso · precipicios (mesetas con acantilados) |
@@ -59,7 +59,9 @@ nueva a la que ya seguía, como Fast-Planner y EGO-Planner.
   no está libre.
 - **Búsqueda (fase 3):** una cámara de detección (82°, inclinada 60°) ve la plataforma según su tamaño en la
   imagen, si nada la tapa, y a veces se equivoca (falsas alarmas). El dron mantiene un **mapa de probabilidad** que
-  actualiza con la regla de Bayes, elige adónde ir con tres estrategias y **confirma** cada detección de cerca.
+  actualiza con la regla de Bayes, elige adónde ir con tres estrategias y **confirma cada detección en vuelo**, sin
+  pararse: va hacia ella (en carrera, a toda velocidad) y la confirma con las imágenes que toma por el camino. Un
+  filtro "M de N" (como el de un radar) ignora las falsas alarmas sueltas.
 - **Objetivo que huye (fase 4):** al ver al dron, el vehículo escapa y se esconde tras obstáculos. El dron lo sigue
   con la cámara en un gimbal y, si lo pierde, lo busca **desde la última posición vista** con una creencia que se
   difunde a la velocidad del vehículo.
@@ -96,13 +98,16 @@ nueva a la que ya seguía, como Fast-Planner y EGO-Planner.
 - **El mapa del dron:** celdas ocupadas coloreadas por altura, niebla sobre lo que aún no ha explorado y los ecos de
   la cámara de profundidad. El selector *Vista* muestra el mundo real, solo lo que sabe el dron o los dos.
 - **La búsqueda:** mapa de calor de la probabilidad sobre el terreno (ámbar = aún probable), la zona, el cono de la
-  cámara y las detecciones (naranja pendiente, verde confirmada, gris falsa alarma). Los demás drones del enjambre.
+  cámara y las detecciones (naranja pendiente, verde confirmada, gris falsa alarma). Los demás drones del enjambre
+  y la **zona de cada uno** (fronteras con su color).
+- **Cámaras del enjambre:** el selector *Seguir* elige a qué dron siguen las cámaras, y la cámara **A bordo** muestra
+  lo que ve ese dron (82°, como la del DJI Mini 3); el HUD muestra su fase, velocidad y altura.
 - Botones **⟲ Repetir**, **⭳ Guardar** y **⭱ Abrir** para volver a ver un vuelo sin simularlo otra vez.
 - HUD con fase, velocidad, altura, inclinación, viento y batería, más una brújula con el viento y el rumbo.
 - Gráficas de **velocidad real frente a planificada** y de **error de estimación frente a viento**.
 - Ficha del dron con sus datos reales y resultados de la sesión.
 - Controles de todas las opciones de la tabla de arriba, más semilla, velocidad de simulación y cámara
-  (persecución, libre o cenital).
+  (persecución, a bordo, libre o cenital).
 
 ## Fluidez
 
@@ -116,14 +121,20 @@ Tablas completas (mismos mundos para todos) en [eval/resultados.md](eval/resulta
 × mapa conocido y desconocido), [eval/resultados_busqueda.md](eval/resultados_busqueda.md) y
 [eval/resultados_enjambre.md](eval/resultados_enjambre.md):
 
-- **56 de 60 combinaciones al 100 % en los dos modos de mapa**: los tres drones en calma y con viento, montaña con
+- **58 de 60 combinaciones al 100 % en los dos modos de mapa**: los tres drones en calma y con viento, montaña con
   meta en la cima, azotea, precipicios, bosque de densidad máxima, **almacén sin GPS con pasillos de 2,4 m**, lluvia
-  fuerte, carreras, **objetivo en movimiento** y **objetivo que huye**. Construir el mapa cuesta un +11 % de tiempo.
+  fuerte, carreras, **objetivo en movimiento** y **objetivo que huye**.
+- **Sprint de carrera:** al ver la meta vuela a su velocidad máxima real, una cámara en gimbal afina la posición de la
+  puerta y en los últimos metros apunta directamente a ella: carreras un 5-19 % más rápidas y ya no roza la puerta
+  sin cruzarla (antes, casi la mitad de las veces), sin choques.
+- **A por todas:** en carrera con búsqueda, confirmar la detección en vuelo en vez de pararse baja el tiempo un
+  13-36 % según el dron (PX4: de 35,9 a 23,1 s), sin choques.
 - **Ajuste automático:** con los parámetros ajustados cada dron vuela un 8-17 % más rápido en mapas densos y con
   viento que con los de fábrica, sin añadir choques.
-- **Búsqueda:** 53 de 54 casillas al 100 %, sin choques. Con 60 semillas las tres estrategias tardan lo mismo de media (~24 s);
-  la bayesiana es la más regular (en el peor 10 % de los casos, 31 s frente a 40 s del barrido). Con **2 drones**,
-  el barrido baja de 30 a 17 s.
+- **Búsqueda:** 54 de 54 casillas al 100 %, sin choques. Confirmar la detección en vuelo (sin bajar a mirarla), un
+  detector a 10 imágenes por segundo con filtro de falsas alarmas "M de N" y bajar en vertical sobre la plataforma
+  la hacen un 18-33 % más rápida según el dron (PX4 con mapa desconocido: de 40,9 a 27,9 s; 40 semillas), con
+  0,1 falsas alarmas por vuelo en vez de 1,3.
 - **Objetivo que huye:** con un dron lo captura el 83 % de las veces (30 semillas) y tarda ~1,5 min; **en equipo,
   97 % con 2 o 3 drones y en ~50 s** ([eval/resultados_persecucion.md](eval/resultados_persecucion.md)).
 - **Límites reales:** el PX4 genérico, con viento de 10 m/s (su límite), aterriza fuera de la plataforma o choca con

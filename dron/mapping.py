@@ -39,6 +39,7 @@ L_HIT, L_MISS = 0.85, -0.4          # log(0,7/0,3), log(0,4/0,6)
 L_MIN, L_MAX = -2.0, 3.5            # log-odds de 0,12 y 0,97
 FAR = 99.0                          # holgura "infinita" (no hay nada ocupado)
 UP_RAY = 0.05                       # seno del ángulo a partir del cual un rayo "sube" (~3°)
+CORR_NEAR = 5.0                     # m: hasta aquí se corrige la holgura con el centroide de los ecos
 
 
 class OccupancyMap:
@@ -131,6 +132,11 @@ class OccupancyMap:
             return -math.inf
         col = self.occ[i, j] & self.from_side[i, j]   # lo visto solo desde abajo (un techo) no es una superficie
         k = min(int(below / CELL), self.shape[2] - 1)
+        # una pared o un pilar en la MISMA columna (con celdas de 1 m, pasa pegado a ellos) no es suelo: se salta el
+        # tramo ocupado que llega hasta la altura pedida. Antes, un pilar junto a la meta del almacén daba "suelo" a
+        # la altura del dron y la altura mínima lo empujaba hasta el techo: nunca bajaba a la puerta
+        while k >= 0 and col[k]:
+            k -= 1
         ks = np.nonzero(col[:k + 1])[0]
         if not len(ks):
             return -math.inf
@@ -171,12 +177,18 @@ class LearnedGrid:
             else:   # distancia al centroide de los ecos de la celda ocupada más cercana (acotada)
                 d, near = distance_transform_edt(~solid, return_indices=True)
                 d = d * CELL
-                i, j, k = near
+                edt = d - 0.5 * CELL
+                # solo cerca de los obstáculos (≤ CORR_NEAR): más lejos, media celda no cambia ninguna decisión (las
+                # holguras que se piden no pasan de ~3,5 m) y la corrección era la mitad del coste del ESDF
+                m = (d > 0) & (d <= CORR_NEAR)
+                cells = np.nonzero(m)
+                i, j, k = (a[m] for a in near)
                 n = hit_n[i, j, k]
-                cen = hit_sum[i, j, k] / np.maximum(n, 1.0)[..., None]
-                ctr = (np.stack(np.indices(solid.shape), axis=-1) + 0.5) * CELL
+                cen = hit_sum[i, j, k] / np.maximum(n, 1.0)[:, None]
+                ctr = (np.stack(cells, axis=-1) + 0.5) * CELL
                 exact = np.linalg.norm(ctr - cen, axis=-1) - 0.1
-                edt = np.where(n > 0, np.clip(exact, d - 0.5 * CELL, d + 0.5 * CELL), d - 0.5 * CELL)
+                dm = d[m]
+                edt[m] = np.where(n > 0, np.clip(exact, dm - 0.5 * CELL, dm + 0.5 * CELL), dm - 0.5 * CELL)
             edt[solid] = -0.5 * CELL
         else:
             edt = np.full(solid.shape, FAR)

@@ -143,6 +143,7 @@ class Swarm:
             f["swarm"].append({"id": s.id, "pos": s.drone.p.round(2).tolist(), "est": s.est.p.round(2).tolist(),
                                "x_body": xb.round(3).tolist(), "z_body": zb.round(3).tolist(),
                                "phase": s.mission.phase, "goal": None if goal is None else goal.round(1).tolist(),
+                               "speed": round(float(np.linalg.norm(s.drone.v)), 2),
                                "status": s.status})
         f["lead"] = self.lead.id
         f["found_t"] = self.lead.mission.found_t

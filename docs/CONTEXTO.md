@@ -261,33 +261,143 @@ Todos están en `dron/params.py`, con fuente:
    semillas nuevas. Es lo que se hace con los drones reales (ajuste por aparato en PX4); una red neuronal se deja
    para más adelante (lección 3d y sección 6).
 
+## 3f. Lecciones de "a por todas", las cámaras del enjambre y el almacén estrecho
+
+1. **Confirmar en vuelo en vez de pararse** (carrera con búsqueda): al detectar, el dron ya no baja a 5 m y se queda
+   mirando hasta 4 s; sale a velocidad de carrera hacia la detección y cuenta las imágenes que toma por el camino
+   (solo las que deberían verla: dentro del cono y con probabilidad de detección ≥ 0,3). 3 que coinciden,
+   confirmada; 8 sin confirmarla, falsa alarma y vuelve a buscar. 40 semillas, mapa desconocido: PX4 con viento
+   35,9 → 23,1 s, Matrice 24,0 → 18,5 s, Mini 19,4 → 17,0 s, 2 PX4 24,2 → 18,6 s; todos 40/40 y sin choques.
+2. **Confirmada de lejos, la puerta queda mal puesta.** El error de la detección crece con la distancia (2 cm por
+   metro + 10 cm): confirmada desde 20 m, la puerta quedaba a 1,3 m de la real y el dron esperaba en el sitio
+   equivocado. Ahora sigue afinándola hasta cruzarla con la media de lo visto pesada por 1/σ² (las imágenes de
+   cerca pesan más).
+3. **Perseguir sin frenar nada es peor.** Con la velocidad de cierre máxima hasta la puerta, el dron se pasaba de
+   largo, perdía de vista al vehículo y lo capturaba menos (82 % frente a 95 %, 40 semillas) y un Mini chocó contra
+   el borde. Lo que funciona es el perfil de tiempo mínimo: la mayor velocidad desde la que aún puede frenar hasta
+   la del vehículo justo en la puerta, √(a·d). 37/40 y 83 s de media frente a 38/40 y 92 s: igual de eficaz, algo
+   más rápido.
+4. **Las replanificaciones del almacén no son por la resolución.** En el almacén estrecho con mapa desconocido, 3 de
+   cada 4 replanificaciones son porque la trayectoria atraviesa una estantería recién descubierta (a ~9 m por
+   delante: lo desconocido se trata como libre). Celdas más finas no las evitarían. Encarecer lo no visto en A*
+   (preferir el espacio ya explorado) tampoco mejora de forma clara (37 → 38/40, pero +3 s): descartado.
+5. **La meta dentro de la estantería.** Lo que sí fallaba: la deriva de la odometría visual (~0,5-1 m al final del
+   almacén) desplaza el mapa respecto a la plataforma y, en un pasillo estrecho, la meta caía dentro de la estantería
+   del mapa: sin camino, el dron esperaba junto a ella hasta agotar el tiempo. Ahora, si la meta no tiene holgura,
+   el planificador la acerca al punto libre más cercano (≤ 2,5 m, como Fast-Planner y EGO-Planner) y la cámara del
+   aterrizaje de precisión corrige después. Almacén de 2,4 m, mapa desconocido, 40 semillas: PX4 37 → 40/40 y
+   Matrice 28 → 37/40.
+6. **ESDF casi el doble de rápido** (25 → 14 ms en el almacén): la corrección por el centroide de los ecos solo se
+   calcula a menos de 5 m de los obstáculos; más lejos, media celda no cambia ninguna decisión.
+7. **El banco de pruebas repetía mundos.** Si un mundo no tiene camino se prueba otra semilla; con semillas
+   consecutivas, en el almacén estrecho (la mitad no tiene camino) las semillas 6, 7, 8 y 9 daban el mismo mundo.
+   Ahora se salta de 7919 en 7919. Fuera del almacén no cambia ningún mundo (0 de 120 comprobados).
+8. **Geovalla con tiempo de reacción.** Un Matrice persiguiendo a 7 m/s junto a una esquina chocaba contra el borde
+   (1-3 de 40 vuelos, con y sin "a por todas"): mientras giraba no le quedaba aceleración para frenar. La distancia
+   de seguridad de la geovalla suma ahora lo que recorre en 0,15 s hacia el borde: Matrice 39/40 y 39/40 (semillas
+   3000 y 4000) sin choques. Con 0,3 s (como Collision Prevention), el PX4 se quedaba lejos del borde donde se
+   escondía el vehículo y lo capturaba menos (67/80 frente a 75/80); con 0,15 s, 73/80.
+
+## 3g. Lecciones del sprint de carrera (a la velocidad máxima al ver la meta)
+
+Velocidades máximas reales, las del fabricante (ya estaban en `params.py`): DJI Mini 3 16 m/s en modo Sport, DJI
+Matrice 350 RTK 23 m/s en modo S, PX4 12 m/s (MPC_XY_VEL_MAX por defecto). Antes la carrera volaba al 90 % y, sobre
+todo, a la velocidad que permite frenar dentro del alcance de los sensores: ~9 m/s el Mini y el PX4, ~17 m/s el
+Matrice.
+
+1. **Sprint al ver la meta.** Si hay línea de visión libre hasta la puerta con la holgura del planificador (y, con
+   mapa desconocido, todo el pasillo ya observado), vuela a la velocidad máxima del fabricante y acelera con
+   `acc_max` (PX4: MPC_ACC_HOR_MAX, 5 m/s²; Mini: 70 % de g·tan 35°, ESTIMADO). El límite de los sensores existe
+   para lo que el dron no ve; el pasillo hasta la meta lo ve libre (DJI hace algo parecido: en modo Sport desactiva
+   la detección de obstáculos).
+2. **Collision Prevention frenaba el sprint por dos motivos.** (a) Su límite global ("poder frenar dentro de lo que
+   se ve") trataba la puerta como una pared: de 15 a 7 m/s al acercarse; en el sprint no se aplica, porque la meta se
+   cruza. (b) Cada rayo es una pared perpendicular a él (el modelo de PX4): un árbol a 6 m y 30° del rumbo frenaba
+   al dron. En el sprint solo cuentan los obstáculos dentro del pasillo que barre el dron (radio + 0,6 m + 0,05 s·v).
+   Solo con la meta quieta: persiguiendo a un vehículo el dron gira sin parar y con esto hubo 6 choques en 40.
+3. **Casi la mitad de las carreras rozaban la puerta sin cruzarla** (17-19 de 40, con o sin sprint) y tenían que
+   volver. Dos causas: (a) el GPS: el dron va a donde CREE que está la meta, con ~1 m de error en el Mini; ahora una
+   cámara en gimbal apunta a la plataforma (5 Hz) y la puerta se afina con esas medidas RELATIVAS (media pesada por
+   1/σ²), así queda en el mismo marco que la posición estimada: 9 → 5 fallos de 20; (b) el seguimiento: a 12 m/s
+   el dron se queda 1-2 m fuera de la trayectoria al final; ahora, en los últimos max(5 m, 0,7 s·v), deja la
+   trayectoria y apunta directamente a la puerta (guía terminal por persecución pura): 5 → 0 de 20.
+4. **Resultado (40 semillas, antes → ahora, todos 40/40 y sin choques):** Mini mixto 12,5 → 11,2 s; PX4 12,3 → 10,9;
+   Matrice 11,6 → 11,0; Mini en bosque extremo sin mapa 19,6 → 15,8; PX4 en ciudad densa sin mapa 17,2 → 16,3;
+   Matrice en precipicios con viento 16,5 → 15,8; Mini con meta en el aire en montaña 15,4 → 12,7. Con objetivo en
+   movimiento o que huye, el sprint es solo la velocidad máxima y queda igual (PX4 que huye: 34/40 frente a 37/40,
+   mediana 38 s frente a 60 s; Matrice 37/40 los dos).
+5. **Un pilar no es suelo.** La altura mínima de vuelo toma la superficie más alta vista en la columna del dron;
+   con celdas de 1 m, un pilar junto a la meta del almacén caía en la misma columna y daba "suelo" a la altura del
+   dron: lo empujaba hasta el techo y nunca bajaba a la puerta. Ahora se salta el tramo ocupado que llega hasta la
+   altura del dron (una pared en su columna no es un suelo bajo él). Sin cambios fuera del almacén (58/60 en la
+   evaluación; precipicios y montaña, igual en el banco de pruebas).
+
+## 3h. Lecciones de la búsqueda más rápida (misión Aterrizar)
+
+Reparto del tiempo medido antes (PX4, bayesiana, mapa desconocido, 40 semillas, 43 s): buscando 21 s, confirmando
+9 s (bajar a 5 m y quedarse mirando), 8 s volviendo a subir para ir a la plataforma que ya tenía debajo, 3,5 s
+aterrizando. Casi 17 s después de encontrarla.
+
+1. **Confirmar en vuelo también al aterrizar** (como la carrera, 3f.1): hacia la detección a crucero, contando las
+   imágenes de cerca, y al confirmarla aproximación y aterrizaje de precisión. Se desplaza a la altura de búsqueda
+   (como mucho 8 m sobre la detección) y baja en VERTICAL sobre la plataforma en la aproximación: en diagonal desde
+   8-13 m, entre copas y con el error del GPS del Mini, rozó un árbol. La trayectoria hacia la detección se cose a
+   la de búsqueda: sin coser salía en otra dirección y bajando, y el Matrice (30°, 6,5 kg) iba saturado, se
+   desviaba 1,5 m y rozó otra copa. Encima de la detección se gira hacia ella (la cámara mira adelante y abajo); si
+   en 5 s no la confirma, no era.
+2. **Detector a 10 imágenes por segundo** (antes 2; una OAK-D Lite ejecuta YOLOv6n a ~60 según Luxonis): −5 % de
+   tiempo, +23 % de cálculo. Con más imágenes hubo que endurecer la confirmación: (a) **M de N** (como el seguimiento
+   de un radar): una detección suelta no crea candidata, hace falta otra a menos de 3 m en ~0,5 s. Sin esto, un 1 %
+   de falsas alarmas por imagen era una cada 10 s y el dron las perseguía todas (30 en un vuelo); ahora 0,1 por vuelo
+   frente a 1,3; (b) confirmada solo con 3 detecciones vistas de cerca y en ≥ 40 % de las imágenes de cerca (la
+   plataforma sale en el 90 %): una ráfaga de falsas alarmas vista desde lejos, o 3 drones recién despegados mirando
+   la misma zona pequeña, llegó a confirmarse y el dron aterrizó a 50 m.
+3. **Buscar más deprisa no acorta nada** (1,5-2 veces el crucero, 40 semillas, los tres drones): lo limitan el
+   alcance de los sensores y la aceleración en tramos cortos. Descartado.
+4. **Fallos antiguos que salieron al medir:** (a) posado, el telémetro inferior está por debajo de su distancia
+   mínima y no da eco: el dron creía tener el suelo 15 m más abajo y buscaba a 1 m del suelo sin ver nada; (b) un
+   punto de búsqueda pegado a algo recién visto (una copa): replanificaba hacia él 5 veces por segundo sin llegar
+   (500 replanificaciones); ahora elige otro; (c) la búsqueda proponía una y otra vez el sitio donde ya estaba (en
+   una azotea, desde donde no se ve esa zona): ahora, casi parado, la cámara mira a la zona que quiere ver, y si
+   propone 3 veces seguidas el mismo sitio, se descarta.
+5. **Resultado (40 semillas, antes → ahora, todos 40/40 y sin choques):** PX4 con mapa desconocido 40,9 → 27,9 s
+   (−32 %); Matrice 30,3 → 24,3 s (−20 %); Mini con barrido 31,0 → 24,0 s (−23 %); Mini con fronteras y mapa
+   desconocido 29,1 → 24,0 s (−18 %); 3 PX4 38,4 → 25,7 s (−33 %). Ahora lo que más tarda es bajar: 8 m a 1,5 m/s
+   (MPC_Z_V_AUTO_DN de PX4) y aterrizar a 0,7 m/s (MPC_LAND_SPEED).
+
 ## 4. Resultados
 
 Ver `eval/resultados.md` (3 drones × 20 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera,
 objetivo en movimiento o que huye, bosque de densidad máxima y almacén normal y estrecho; cada uno con mapa conocido y
 desconocido). Con los parámetros ajustados por dron y las trayectorias cosidas (25-09-2026):
 
-- **56 de 60 combinaciones al 100 % en los dos modos de mapa**, incluidos los 9 escenarios densos nuevos (bosque de
-  densidad máxima, almacén y almacén de pasillos de 2,4 m, los tres drones). Falla el PX4 con viento de 10 m/s (su
-  límite: aterriza fuera o, con ráfagas fuertes, choca) y, alguna vez, la persecución del vehículo que huye (sin
-  choques; 3 vuelos por casilla son pocos para ese escenario: ver el banco de pruebas).
-- **Tiempo medio** en las 56 combinaciones: 22,1 s con mapa conocido y 24,5 s con mapa desconocido (+11 %: en el
-  almacén estrecho, sin conocerlo, replanifica ~70 veces). Replanificaciones por vuelo: 3,8 y 10,3.
+- **58 de 60 combinaciones al 100 % en los dos modos de mapa**, incluidos los 9 escenarios densos (bosque de
+  densidad máxima, almacén y almacén de pasillos de 2,4 m, los tres drones). Solo falla el PX4 con viento de 10 m/s
+  (su límite: aterriza fuera o, con ráfagas fuertes, choca: el único choque de la tabla).
+- **Tiempo medio** en las 58 combinaciones: 22,5 s con mapa conocido y 25,2 s con mapa desconocido (en el almacén
+  estrecho sin conocerlo replanifica 30-60 veces: va descubriendo estanterías, lección 3f.4). Carreras a una meta
+  quieta con el sprint (lección 3g): 13-18 s.
+- **Carrera con búsqueda "a por todas"** (lección 3f, 40 semillas): PX4 23,1 s (antes 35,9), Matrice 18,5 s (24,0),
+  Mini 17,0 s (19,4), 2 PX4 18,6 s (24,2), todos 40/40. Almacén estrecho con mapa desconocido: PX4 40/40, Mini 39/40,
+  Matrice 37/40 (antes 28/40).
 - **Ajuste por dron frente a fábrica** (validación en 60 vuelos con semillas nuevas en mapas densos y con viento):
   Mini 28,9 → 24,7 s, PX4 36,7 → 33,7 s, Matrice 27,4 → 22,7 s, sin perder éxito ni añadir choques. Banco de
   robustez de 40 semillas tras las correcciones de la lección 3e.7: carrera rápida del Matrice en precipicios con
   mapa desconocido 40/40 y persecución en equipo con 2 PX4 40/40, sin choques.
 - **Objetivo que huye (fase 4):** con 30 semillas (PX4, mixto, `eval/bench.py`): 83 % de capturas con un dron, con
   una mediana de 103 s (lo pierde y lo vuelve a buscar varias veces).
-- **Búsqueda (fase 3, `eval/resultados_busqueda.md`):** 53 de 54 casillas al 100 %, sin choques (en la otra, un
-  Matrice con lluvia no encontró la meta a tiempo en 1 de 3 vuelos). 1,3-2 falsas alarmas por vuelo, todas descartadas. En esa tabla la
+- **Búsqueda (fase 3, `eval/resultados_busqueda.md`, tras la lección 3h):** 54 de 54 casillas al 100 % y ningún
+  choque; 0,1 falsas alarmas por vuelo. Tiempo total medio: barrido 27,6 s, fronteras 31,9 s, bayesiana 32,3 s
+  (antes 63,4, 57,6 y 54,7 s). Lo de abajo es de antes de la 3h: en esa tabla la
   bayesiana parece la más rápida (30 s frente a 40 y 43 s), pero son siempre los mismos 3 mundos por casilla: **con
   60 semillas (`eval/bench.py`, PX4, mixto, colinas) las tres tardan lo mismo de media** (~24 s ± 3-6 s) y la
   diferencia está en el peor caso: percentil 90 de 31 s la bayesiana, 33 s fronteras y 40 s el barrido. Tampoco
   cambian nada una altura de búsqueda de 12 m ni pasadas del barrido cada 16 m (30 semillas).
 - **Persecución en equipo (fases 4 + 5, `eval/resultados_persecucion.md`, 30 semillas):** 1 dron 83 % (mediana
   103 s), 2 drones 97 % (49 s), 3 drones 97 % (60 s), sin choques entre ellos.
-- **Enjambre (fase 5, `eval/resultados_enjambre.md`, PX4 en calma):** 100 % y ningún choque entre drones. Con 2 drones
+- **Enjambre (fase 5, `eval/resultados_enjambre.md`, PX4 en calma):** 100 % y ningún choque entre drones; tras la
+  lección 3h, ~23-24 s con 1, 2 o 3 drones (la encuentran a los 9-11 s: en zonas de 30-40 m el resto es bajar y
+  aterrizar). Antes de la 3h: con 2 drones
   el barrido encuentra la meta en 17 s (29,8 s con 1); la bayesiana apenas mejora (19 → 17 s): a partir de ~16 s
   el tiempo es despegar, llegar a la zona y confirmar. Con 60 semillas (bayesiana, mixto): media 23,9 → 21,1 → 21,7 s
   con 1, 2 y 3 drones; lo que sí mejora con 3 es el peor caso (percentil 90: 31 → 24 s). 0 choques en 120 vuelos.
@@ -343,8 +453,11 @@ Comandos en `CLAUDE.md` (tests, servidor, las tres evaluaciones con `--jobs` y e
   trayectorias de cámara definidas respecto a un sujeto, con el planificador y Collision Prevention de siempre.
 - Red neuronal: aplazada por decisión del usuario. Si se hace, como experimento aparte y comparado en el banco de
   pruebas con lo clásico (por ejemplo, una política que elija la velocidad de crucero, entrenada por imitación).
-- Almacén: con mapa desconocido y pasillos de 2,4 m replanifica ~70 veces por vuelo y tarda +10 % (celdas de 1 m;
-  celdas de 0,5 m solo en interior costarían ~8× el ESDF).
+- Mini con meta en la cima de una montaña y mapa desconocido: 38/40 (2 semillas se quedan sin tiempo; igual
+  antes del sprint y del arreglo del pilar). Sin investigar.
+- Almacén estrecho con mapa desconocido: replanifica mucho porque descubre estanterías (lección 3f.4). Lo que queda
+  por probar es un ESDF incremental (FIESTA) para el enjambre de 4 drones y una política de exploración que mire
+  antes de entrar en un pasillo.
 - Fase 2: trayectorias B-spline de verdad al estilo EGO-Planner. Hay una versión sencilla (`DRON_SMOOTHER=bspline`)
   que no mejora a Chaikin (lección 3d.13); le faltan la factibilidad dinámica y el reparto de tiempos.
 - Fase 6: puente a PX4 SITL + Gazebo (enviar las referencias p/v/a por MAVSDK en modo offboard y leer el estado de

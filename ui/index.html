@@ -45,7 +45,8 @@
     <label class="btn" title="Abrir un vuelo guardado y reproducirlo">⭱ Abrir<input id="file-open" type="file" accept=".json,application/json" hidden></label>
     <label class="field">Velocidad <select id="speed"><option value="0.5">0,5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
     <label class="field" title="Qué dibujar: el mundo real, el mapa que ha construido el dron o los dos">Vista <select id="view"><option value="both">Mundo + mapa del dron</option><option value="map">Solo lo que sabe el dron</option><option value="world">Solo el mundo real</option></select></label>
-    <label class="field">Cámara <select id="camera"><option value="chase">Persecución</option><option value="orbit">Libre</option><option value="top">Cenital</option></select></label>
+    <label class="field">Cámara <select id="camera"><option value="chase">Persecución</option><option value="fpv">A bordo (cámara del dron)</option><option value="orbit">Libre</option><option value="top">Cenital</option></select></label>
+    <label class="field hidden" id="follow-field" title="Enjambre: a qué dron siguen las cámaras de persecución y a bordo">Seguir <select id="follow"></select></label>
     <div class="checks">
       <label class="check"><input id="precision" type="checkbox" checked> Aterrizaje de precisión</label>
       <label class="check"><input id="cp" type="checkbox" checked> Collision Prevention</label>

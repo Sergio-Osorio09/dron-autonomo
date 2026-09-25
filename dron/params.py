@@ -42,6 +42,7 @@ class Profile:
     wind_max: float             # m/s de viento que soporta según el fabricante
     sensor_range: float         # m, alcance de los telémetros
     gps_sigma: float            # m, ruido horizontal del GPS (1 sigma)
+    acc_max: float = 0.0        # m/s², aceleración del sprint de carrera (0: la de acc_hor)
     tko_speed: float = 1.5      # MPC_TKO_SPEED
     land_speed: float = 0.7     # MPC_LAND_SPEED
     tau_att: float = 0.08       # s, respuesta de actitud (ESTIMADO, bucle interno rápido)
@@ -70,15 +71,18 @@ PROFILES = {
         key="mini", name="Pequeño (tipo DJI Mini 3, 249 g)", mass=0.249, radius=0.18,
         v_max=16.0, v_cruise=8.0, acc_hor=4.0, jerk=6.0, v_up=5.0, v_down=3.5, tilt_max_deg=35.0,
         yaw_rate_deg=120.0, twr=2.2, battery_wh=18.1, hover_power_w=18.1 / (38 / 60), wind_max=10.7,
-        sensor_range=12.0, gps_sigma=1.5 / 2),
+        sensor_range=12.0, gps_sigma=1.5 / 2,
+        acc_max=4.8),   # ESTIMADO: 70 % de g·tan(35°) (DJI no publica la aceleración; el resto se va en el arrastre)
     "px4": Profile(
         key="px4", name="Genérico PX4 (valores por defecto)", mass=1.5, radius=0.3,
         v_max=12.0, v_cruise=5.0, acc_hor=3.0, jerk=4.0, v_up=3.0, v_down=1.5, tilt_max_deg=45.0,
         yaw_rate_deg=60.0, twr=2.0, battery_wh=80.0, hover_power_w=200.0, wind_max=10.0,
-        sensor_range=15.0, gps_sigma=0.5),
+        sensor_range=15.0, gps_sigma=0.5,
+        acc_max=5.0),   # MPC_ACC_HOR_MAX por defecto (la de los modos manuales; la de misión es MPC_ACC_HOR, 3)
     "matrice": Profile(
         key="matrice", name="Inspección (tipo DJI Matrice 350 RTK)", mass=6.47, radius=0.45,
         v_max=23.0, v_cruise=10.0, acc_hor=4.0, jerk=5.0, v_up=6.0, v_down=5.0, tilt_max_deg=30.0,
         yaw_rate_deg=100.0, twr=1.9, battery_wh=2 * 263.2, hover_power_w=2 * 263.2 / (55 / 60), wind_max=12.0,
-        sensor_range=40.0, gps_sigma=0.1),  # RTK: ±0,1 m
+        sensor_range=40.0, gps_sigma=0.1,  # RTK: ±0,1 m
+        acc_max=4.0),   # ESTIMADO: 70 % de g·tan(30°) ≈ la que ya usa (6,5 kg y 30° de inclinación máxima)
 }

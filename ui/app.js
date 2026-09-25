@@ -9,7 +9,7 @@ const els = {
   precision: $("precision"), cp: $("cp"), rays: $("show-rays"), gps: $("show-gps"), viewport: $("viewport"),
   toast: $("toast"), banner: $("banner"), mode: $("mode"), terrain: $("terrain"), density: $("density"),
   goalKind: $("goal-kind"), rain: $("rain"), motion: $("motion"), mapMode: $("map-mode"), view: $("view"),
-  search: $("search"), drones: $("drones"),
+  search: $("search"), drones: $("drones"), follow: $("follow"), followField: $("follow-field"),
 };
 const PHASES = { "en tierra": "En tierra", despegue: "Despegue", crucero: "Crucero", "aproximación": "Aproximación",
   aterrizaje: "Aterrizaje", aterrizado: "Aterrizado", "búsqueda": "Buscando", "confirmación": "Confirmando", espera: "Esperando (otro la encontró)", carrera: "Carrera", reintento: "Volviendo a la meta", meta: "¡Meta!", "persecución": "Persecución" };
@@ -433,6 +433,33 @@ function drawSearch(s) {
     g.fillStyle = `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${(c[3] / 255).toFixed(3)})`;
     g.fillRect((x0 + i * dx) * sc, (y0 + j * dy) * sc, dx * sc + 0.5, dy * sc + 0.5);
   }
+  // enjambre: la zona de cada dron (celda de Voronoi según las posiciones que se comunican por radio), con su color
+  const team = frame && frame.swarm && frame.swarm.length > 1 ? frame.swarm : null;
+  if (team) {
+    const own = new Int8Array(nx * ny);
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+      const cx = x0 + (i + 0.5) * dx, cy = y0 + (j + 0.5) * dy;
+      let best = 0, bd = Infinity;
+      team.forEach((d, k) => { const e = (d.est[0] - cx) ** 2 + (d.est[1] - cy) ** 2; if (e < bd) { bd = e; best = k; } });
+      own[i * ny + j] = best;
+    }
+    // fronteras entre zonas: trazo oscuro debajo (contraste con el mapa de calor) y encima, a cada lado, el color
+    // del dron dueño de esa celda
+    const seg = [];
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) {
+      const o = own[i * ny + j], X0 = (x0 + i * dx) * sc, Y0 = (y0 + j * dy) * sc, X1 = X0 + dx * sc, Y1 = Y0 + dy * sc;
+      if (i + 1 < nx && own[(i + 1) * ny + j] !== o) seg.push([X1, Y0, X1, Y1, o, own[(i + 1) * ny + j], 1, 0]);
+      if (j + 1 < ny && own[i * ny + j + 1] !== o) seg.push([X0, Y1, X1, Y1, o, own[i * ny + j + 1], 0, 1]);
+    }
+    const line = (a, b, c, d) => { g.beginPath(); g.moveTo(a, b); g.lineTo(c, d); g.stroke(); };
+    g.strokeStyle = "rgba(10,14,20,0.85)"; g.lineWidth = 5;
+    seg.forEach(([a, b, c, d]) => line(a, b, c, d));
+    g.lineWidth = 2;
+    seg.forEach(([a, b, c, d, o1, o2, ux, uy]) => {
+      g.strokeStyle = SWARM_COLORS[o1 % 4]; line(a - ux * 1.2, b - uy * 1.2, c - ux * 1.2, d - uy * 1.2);
+      g.strokeStyle = SWARM_COLORS[o2 % 4]; line(a + ux * 1.2, b + uy * 1.2, c + ux * 1.2, d + uy * 1.2);
+    });
+  }
   probTex.needsUpdate = true;
   searchGroup.clear();
   // contorno de la zona, pegado al terreno
@@ -510,8 +537,20 @@ function makeMate(color, radius) {
 function clearMates() {
   mates.forEach((m) => scene.remove(m.mesh));
   mates.length = 0;
+  els.follow.innerHTML = "";
+  els.followField.classList.add("hidden");
+}
+function followed() {   // el dron al que siguen las cámaras: 0 = el principal; k = el k-ésimo del enjambre
+  const k = Number(els.follow.value || 0);
+  return k > 0 && mates[k - 1] ? mates[k - 1].mesh : drone;
 }
 function applySwarm(list) {
+  if (els.follow.options.length !== list.length) {   // selector "Seguir": un dron por opción, con su color
+    const k = els.follow.value;
+    els.follow.innerHTML = list.map((d, i) => `<option value="${i}" style="color:${SWARM_COLORS[i % 4]}">● Dron ${i + 1}</option>`).join("");
+    if (k && Number(k) < list.length) els.follow.value = k;
+    els.followField.classList.toggle("hidden", list.length < 2);
+  }
   const others = list.filter((d) => d.id !== 0);
   while (mates.length < others.length) mates.push(makeMate(SWARM_COLORS[(mates.length + 1) % 4], profile ? profile.radius : 0.3));
   others.forEach((d, i) => {
@@ -649,6 +688,7 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 let lastRender = performance.now(), camYaw = 0;
+const yawRate = () => (els.camera.value === "fpv" ? 6.0 : 2.0);   // a bordo, el gimbal sigue el rumbo más deprisa
 // calidad adaptativa: si el navegador va a menos de ~35 fps durante 2 s, baja resolución interna y sombras
 const perf = { acc: 0, n: 0, level: 0 };
 function adaptQuality(dt) {
@@ -692,24 +732,42 @@ function animate() {
     coneLines.visible = !!(searchData && frame && (frame.phase === "búsqueda" || frame.phase === "confirmación"));
     if (coneLines.visible) drawCone(s.p, frame.yaw);
     drawRays(s.p);
-    const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(s.q);
-    let dy = Math.atan2(-fwd.z, fwd.x) - camYaw;
-    dy = Math.atan2(Math.sin(dy), Math.cos(dy));
-    camYaw += dy * (1 - Math.exp(-dt * 2.0));
+    if (followed() === drone) {
+      const fwd = new THREE.Vector3(1, 0, 0).applyQuaternion(s.q);
+      let dy = Math.atan2(-fwd.z, fwd.x) - camYaw;
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      camYaw += dy * (1 - Math.exp(-dt * yawRate()));
+    }
   }
   (drone.userData.rotors || []).forEach((r, i) => { r.rotation.y += (i % 2 ? 1 : -1) * dt * 60; });
   mates.forEach((m) => { m.mesh.position.lerp(m.target, 1 - Math.exp(-dt * 10)); m.mesh.quaternion.slerp(m.q, 1 - Math.exp(-dt * 10)); });
   updateWind(dt * simRate, drone.position);
   updateRain(dt * simRate, drone.position);
   worldGroup.children.forEach((c) => { if (c.userData.spin) c.rotation.y += dt * 0.8; });
-  const mode = els.camera.value, dp = drone.position, kc = 1 - Math.exp(-dt * 3);
+  const mode = els.camera.value, tgt = followed(), dp = tgt.position, kc = 1 - Math.exp(-dt * 3);
+  if (tgt !== drone) {   // siguiendo a otro dron del enjambre: su rumbo
+    const f2 = new THREE.Vector3(1, 0, 0).applyQuaternion(tgt.quaternion);
+    let d2 = Math.atan2(-f2.z, f2.x) - camYaw;
+    d2 = Math.atan2(Math.sin(d2), Math.cos(d2));
+    camYaw += d2 * (1 - Math.exp(-dt * yawRate()));
+  }
   controls.enabled = mode === "orbit";
-  if (mode === "chase") {
+  const fov = mode === "fpv" ? 82 : 60;   // a bordo: el campo de visión de la cámara del DJI Mini 3 (82,1°)
+  if (camera.fov !== fov) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  drone.visible = !(mode === "fpv" && tgt === drone);
+  mates.forEach((m) => { m.mesh.visible = !(mode === "fpv" && tgt === m.mesh); });
+  if (mode === "fpv") {   // cámara a bordo, estabilizada (gimbal): mira según el rumbo, 15° hacia abajo
+    const fwd = new THREE.Vector3(Math.cos(camYaw), 0, -Math.sin(camYaw));
+    camera.position.copy(dp).addScaledVector(fwd, profile ? profile.radius * 0.8 : 0.2);
+    camera.lookAt(camera.position.clone().addScaledVector(fwd, 10).add(new THREE.Vector3(0, -10 * Math.tan(0.26), 0)));
+  } else if (mode === "chase") {
     const dist = profile ? Math.max(5, profile.radius * 14) : 6;
     camera.position.lerp(dp.clone().add(new THREE.Vector3(-Math.cos(camYaw) * dist, dist * 0.45, Math.sin(camYaw) * dist)), kc);
     camera.lookAt(dp.clone().add(new THREE.Vector3(Math.cos(camYaw) * 4, 0.3, -Math.sin(camYaw) * 4)));
   } else if (mode === "top" && world) {
-    camera.position.lerp(new THREE.Vector3(world.size[0] / 2, 62, -world.size[1] / 2 + 0.01), kc);
+    // altura para que quepa todo el mundo según la proporción de la ventana (con 60° de campo vertical)
+    const hTop = 1.1 * Math.max(world.size[1], world.size[0] / camera.aspect) / (2 * Math.tan(Math.PI / 6));
+    camera.position.lerp(new THREE.Vector3(world.size[0] / 2, hTop, -world.size[1] / 2 + 0.01), kc);
     camera.lookAt(world.size[0] / 2, 0, -world.size[1] / 2);
   } else {
     controls.target.lerp(dp, kc);
@@ -769,9 +827,13 @@ function lineChart(id, series, yMax, labelEl, label) {
 
 function drawPanel(f) {
   $("h-time").textContent = f.t.toFixed(1) + " s";
-  $("h-phase").textContent = PHASES[f.phase] || f.phase;
-  $("h-speed").textContent = f.speed.toFixed(1) + " m/s";
-  $("h-alt").textContent = f.pos[2].toFixed(1) + " m";
+  // enjambre: fase, velocidad y altura del dron al que sigue la cámara
+  const fk = Number(els.follow.value || 0), fd = fk > 0 && f.swarm ? f.swarm[fk] : null;
+  const ph = fd ? fd.phase : f.phase;
+  // sprint de carrera: ve la meta y va a su velocidad máxima
+  $("h-phase").textContent = (PHASES[ph] || ph) + (!fd && f.sprint ? " · a tope" : "") + (fd ? ` (${fk + 1})` : "");
+  $("h-speed").textContent = (fd && fd.speed != null ? fd.speed : f.speed).toFixed(1) + " m/s";
+  $("h-alt").textContent = (fd ? fd.pos[2] : f.pos[2]).toFixed(1) + " m";
   $("h-tilt").textContent = f.tilt_deg.toFixed(0) + "°";
   $("h-wind").textContent = Math.hypot(f.wind[0], f.wind[1]).toFixed(1) + " m/s";
   $("h-bat").textContent = f.battery.toFixed(1) + " %";
@@ -787,7 +849,8 @@ function drawPanel(f) {
   $("k-covered").textContent = sd && !chase ? fmt(100 * sd.covered, 0, " %") : "—";
   $("k-found").textContent = sd && !chase ? (f.found_t != null ? f.found_t.toFixed(1) + " s" : "buscando…") : "—";
   $("k-false").textContent = sd ? sd.detections.filter((d) => d.state === "falsa").length : "—";
-  $("k-swarm").textContent = f.swarm ? `${f.swarm.length} drones` + (f.found_t != null ? ` · la encontró el ${f.lead + 1}` : "") : "—";
+  $("k-swarm").textContent = f.swarm ? `${f.swarm.length} drones` + (f.found_t != null ? ` · la encontró el ${f.lead + 1}` : "")
+    + (fk > 0 && fd ? ` · sigues al ${fk + 1} (${PHASES[fd.phase] || fd.phase})` : "") : "—";
   $("k-speed").textContent = `${f.speed.toFixed(1)} / ${f.ref_speed.toFixed(1)} m/s`;
   $("k-vz").textContent = fmt(f.vz, 1, " m/s");
   $("k-acc").textContent = fmt(Math.hypot(...f.acc), 1, " m/s²");

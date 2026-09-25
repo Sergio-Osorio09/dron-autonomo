@@ -301,6 +301,23 @@ def velocity_profile(P: np.ndarray, prof: Profile, v_cruise: float, end_speed: f
 SMOOTHER = os.environ.get("DRON_SMOOTHER", "chaikin")   # "bspline" (EGO-Planner) o "chaikin"
 
 
+def free_goal_near(grid, goal, need: float, radius: float = 2.5):
+    """Punto más cercano a `goal` (a menos de `radius` m, a la misma altura o hasta 1,5 m más arriba) con holgura
+    ≥ need + 5 cm, o None. Solo si la meta NO tiene esa holgura (si la tiene, devuelve None: no hay nada que mover)."""
+    g = np.asarray(goal, float)
+    if grid_clearance(grid, g[None])[0] >= need:
+        return None
+    r = np.arange(-radius, radius + 1e-9, 0.25)
+    X, Y, Z = np.meshgrid(r, r, (0.0, 0.5, 1.0, 1.5), indexing="ij")
+    D = np.stack([X.ravel(), Y.ravel(), Z.ravel()], axis=1)
+    D = D[np.hypot(D[:, 0], D[:, 1]) <= radius]
+    P = g + D
+    ok = grid_clearance(grid, P) >= need + 0.05
+    if not ok.any():
+        return None
+    return P[ok][np.argmin(np.linalg.norm(D[ok] * np.array([1.0, 1.0, 2.0]), axis=1))]   # mejor no subir
+
+
 def grid_clearance(grid, P) -> np.ndarray:
     """Holgura interpolada (trilineal) en muchos puntos, para la rejilla del mundo o la aprendida (misma interfaz)."""
     from .mapping import LearnedGrid
@@ -370,7 +387,18 @@ def plan(world, grid, prof: Profile, start, goal, v_cruise: Optional[float] = No
         if cells is not None:
             break
     if cells is None:
-        return None
+        # la meta ha quedado dentro o pegada a un obstáculo del mapa (en el almacén, la deriva de la odometría
+        # visual desplaza el mapa ~0,5-1 m respecto a la plataforma, y en un pasillo estrecho eso la mete en la
+        # estantería): se acerca al punto libre más cercano, como hacen Fast-Planner y EGO-Planner. La cámara del
+        # aterrizaje de precisión corrige después. Sin esto, 3 de 40 vuelos se quedaban esperando junto a la meta
+        need = prof.radius + min_margin
+        alt = free_goal_near(grid, goal, need)
+        if alt is None:
+            return None
+        goal = alt
+        cells = astar(grid, start, goal, need)
+        if cells is None:
+            return None
     pts = [np.array(start, float)] + [grid.center(c) for c in cells[1:-1]] + [np.array(goal, float)]
     pts = string_pull(world, pts, need)
     if prefix is not None:   # cosido: el suavizado ve la dirección con la que llega el dron

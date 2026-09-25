@@ -42,14 +42,17 @@ MAP_MODES = ("conocido", "desconocido")
 FLIGHT_PHASES = ("crucero", "carrera", "persecución", "reintento", "búsqueda", "confirmación")
 DT = 0.005
 MAX_TIME = 150.0
+GATE_CAMERA = __import__("os").environ.get("DRON_GATE_CAMERA", "1") != "0"   # 0: sin la cámara de la puerta
 
 
 def make_flyable_world(level, seed, radius, goal_kind="suelo", terrain="plano", density="normal", race=False,
                        motion="fija"):
-    """Mundo en el que A* encuentra camino de la salida a la meta (prueba semillas consecutivas)."""
+    """Mundo en el que A* encuentra camino de la salida a la meta. Si no lo hay, prueba otras semillas a saltos de
+    7919 (primo): con semillas consecutivas, en el almacén de pasillos de 2,4 m (la mitad de los mundos no tienen
+    camino) las semillas 6, 7, 8 y 9 acababan en el mismo mundo y el banco de pruebas repetía vuelos."""
     seed = seed if seed is not None else random.randrange(1 << 30)
     for k in range(30):
-        w = make_world(level, seed + k, goal_kind, terrain, density, race, motion)
+        w = make_world(level, seed + 7919 * k, goal_kind, terrain, density, race, motion)
         grid = ClearanceGrid(w)
         s = (w.start[0], w.start[1], w.start[2] + 2.5)
         g = (w.goal[0], w.goal[1], w.goal[2] + (1.0 if race and w.goal_support else 0.0 if race else 2.5))
@@ -184,6 +187,15 @@ class Simulation:
             if rel is not None:                                   # posición medida = estimada + relativa
                 q = est.p + rel
                 r["target"], r["target_z"] = (q[0], q[1]), q[2] + 0.3
+        elif m.mode == "carrera" and not self.world.moving and m.gate_est is not None and GATE_CAMERA                 and self.t >= self._next_target:
+            # carrera a una meta quieta: la cámara en gimbal apunta a donde cree que está la plataforma (5 Hz), como
+            # los drones de carreras autónomos que ven la puerta. La medida es RELATIVA: corrige el error del GPS
+            self._next_target = self.t + 0.2
+            aim = m.gate_est - np.array([0.0, 0.0, 1.0 if self.world.goal_support else 0.0])
+            gx, gy, gz = self.world.goal
+            rel = self.sensors.detect_vehicle(d.p, d.yaw, self.world, (gx, gy, gz + 0.05), aim)
+            if rel is not None:
+                r["gate_seen"] = est.p + rel - np.array([0.0, 0.0, 0.05])
         elif self.world.moving and self.t >= self._next_target:  # el vehículo emite su posición a 5 Hz
             self._next_target = self.t + 0.2
             gx, gy, _ = self.world.goal_at(self.t)
@@ -252,8 +264,14 @@ class Simulation:
         if self.collision_prevention:
             # geovalla (como Geofence de PX4): los bordes de la arena son paredes virtuales que los telémetros no ven
             ex, ey = est.p[0], est.p[1]
-            # con su propia distancia de seguridad, fija y prudente (no la ajustada: es un límite, no algo que afinar)
-            fence = [{"label": "geovalla", "dir": dv, "dist": dd, "d_safe": self.prof.radius + 1.0,
+            # con su propia distancia de seguridad, prudente (no la ajustada: es un límite, no algo que afinar): radio
+            # + 1 m + lo que recorre en 0,15 s hacia ese borde (sin este término, un Matrice persiguiendo a 7 m/s
+            # junto a una esquina no llegaba a frenar mientras giraba: 1-3 choques en 40 vuelos → 0. Con 0,3 s,
+            # como Collision Prevention, el PX4 se quedaba lejos del borde donde se escondía el vehículo y lo
+            # capturaba menos: 67/80 frente a 75/80; con 0,15 s, 73/80 y sin choques)
+            react = 0.15
+            fence = [{"label": "geovalla", "dir": dv, "dist": dd,
+                      "d_safe": self.prof.radius + 1.0 + react * max(float(np.dot(est.v, dv)), 0.0),
                       "acc": tuning.FACTORY["cp_acc"] * self.prof.acc_hor} for dv, dd in (
                 ((1.0, 0.0, 0.0), LENGTH - ex), ((-1.0, 0.0, 0.0), ex), ((0.0, 1.0, 0.0), WIDTH - ey), ((0.0, -1.0, 0.0), ey))
                 if dd < self.sensors.range]
@@ -277,6 +295,11 @@ class Simulation:
                 if below < self.sensors.range:
                     rays = rays + [{"label": "abajo", "dir": (0.0, 0.0, -1.0), "dist": below,
                                     "d_safe": self.prof.radius + 0.3}]
+        # sprint: el pasillo hasta la meta se ve libre y la meta se CRUZA (no es una pared): sin límite global de
+        # Collision Prevention (con el pasillo hasta la puerta, frenaba al acercarse a ella: de 15 a 7 m/s)
+        # Solo con la meta quieta: persiguiendo un vehículo el dron gira sin parar y el pasillo "recto" no vale (con
+        # esto también ahí, 6 choques en 40 persecuciones; ahí el sprint es solo la velocidad máxima)
+        self.ctrl.clear_ahead = math.inf if m.sprint and not m.moving else 0.0
         t_vec = self.ctrl.update(est.p.copy(), est.v.copy(), p_ref, v_ref, a_ref, DT, rays)
         d.cmd_z = t_vec / np.linalg.norm(t_vec)
         d.cmd_thrust = float(t_vec @ d.z_body)
@@ -327,7 +350,7 @@ class Simulation:
         d, m = self.drone, self.mission
         xb, yb, zb = d.attitude()
         out = {
-            "t": round(self.t, 3), "status": self.status, "cause": self.cause, "phase": m.phase,
+            "t": round(self.t, 3), "status": self.status, "cause": self.cause, "phase": m.phase, "sprint": m.sprint,
             "pos": d.p.round(3).tolist(), "vel": d.v.round(3).tolist(), "acc": d.a.round(3).tolist(),
             "est": self.est.p.round(3).tolist(), "est_err": float(np.linalg.norm(self.est.p - d.p)),
             "x_body": xb.round(4).tolist(), "z_body": zb.round(4).tolist(), "yaw": d.yaw,

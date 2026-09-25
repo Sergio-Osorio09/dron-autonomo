@@ -34,7 +34,9 @@ def test_chase_an_evader_with_the_camera_only():
 
 
 def test_swarm_shares_the_search_and_splits_the_area():
-    sw = Swarm(3, profile="px4", level="mixto", seed=11, search="bayesiana")
+    # (semilla 12: con la de antes, confirmando en vuelo y a 10 imágenes por segundo la encuentra a los 7 s,
+    # antes de que los tres tengan su punto de búsqueda propio)
+    sw = Swarm(3, profile="px4", level="mixto", seed=12, search="bayesiana")
     assert len(sw.sims) == 3 and all(s.searcher is sw.sims[0].searcher for s in sw.sims)
     starts = [s.drone.p.copy() for s in sw.sims]
     assert min(np.linalg.norm(a[:2] - b[:2]) for i, a in enumerate(starts) for b in starts[i + 1:]) > 2.0
