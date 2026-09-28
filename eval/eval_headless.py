@@ -53,7 +53,7 @@ def run(profile, cond, levels, flights, seed, precision=True, map_mode="conocido
         for i in range(flights):
             s = Simulation(profile=profile, level=level, seed=seed + i, wind_dir=(i * 97) % 360,
                            precision_landing=precision, map_mode=map_mode, **cfg)
-            errs = []
+            errs = [0.0]
             while not s.done:
                 s.step(0.5)
                 errs.append(float(np.linalg.norm(s.est.p - s.drone.p)))
@@ -71,7 +71,7 @@ def run(profile, cond, levels, flights, seed, precision=True, map_mode="conocido
                 dist.append(s.distance)
     n = len(levels) * flights
     return {"profile": profile, "cond": cond, "success": res["success"] / n, "missed": res["missed"] / n,
-            "crash": res["crash"] / n, "timeout": res["timeout"] / n,
+            "crash": res["crash"] / n, "timeout": res["timeout"] / n, "grounded": res["grounded"] / n,
             "time": statistics.mean(times) if times else None,
             "land": statistics.mean(land_err) if land_err else None, "est": statistics.mean(est_err),
             "vmax": max(vmax), "energy": statistics.mean(energy),
@@ -93,17 +93,17 @@ def main():
     ap.add_argument("--jobs", type=int, default=1, help="procesos en paralelo (cada combinación es independiente)")
     a = ap.parse_args()
     t0 = time.time()
-    rows = ["| perfil | condición | mapa | éxito | fuera de la plataforma | choca | tiempo medio | distancia "
-            "| replanif. (por el mapa) | error de aterrizaje | error de estimación | vel. máx. | batería usada |",
-            "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    rows = ["| perfil | condición | mapa | éxito | fuera de la plataforma | choca | no despega (viento) | tiempo medio "
+            "| distancia | replanif. (por el mapa) | error de aterrizaje | error de estimación | vel. máx. | batería usada |",
+            "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     combos = [(prof, cond, mm) for prof in a.profiles.split(",")
               for cond in [list(CONDITIONS)[int(i)] for i in a.conditions.split(",")] for mm in a.maps.split(",")]
     args = [(p, c, list(LEVELS), a.flights, a.seed, not a.no_precision, m) for p, c, m in combos]
     with ProcessPoolExecutor(max_workers=max(1, a.jobs)) as pool:
         results = pool.map(run, *zip(*args)) if a.jobs > 1 else map(run, *zip(*args))
         for (prof, cond, mm), r in zip(combos, results):
-            rows.append("| %s | %s | %s | %.0f%% | %.0f%% | %.0f%% | %s | %s | %.1f (%.1f) | %s | %.2f m | %.1f m/s | %.2f%% |" % (
-                prof, cond, mm, 100 * r["success"], 100 * r["missed"], 100 * r["crash"],
+            rows.append("| %s | %s | %s | %.0f%% | %.0f%% | %.0f%% | %.0f%% | %s | %s | %.1f (%.1f) | %s | %.2f m | %.1f m/s | %.2f%% |" % (
+                prof, cond, mm, 100 * r["success"], 100 * r["missed"], 100 * r["crash"], 100 * r["grounded"],
                 "%.1f s" % r["time"] if r["time"] else "—", "%.0f m" % r["dist"] if r["dist"] else "—",
                 r["replans"], r["map_replans"], "%.2f m" % r["land"] if r["land"] is not None else "—",
                 r["est"], r["vmax"], r["energy"]))

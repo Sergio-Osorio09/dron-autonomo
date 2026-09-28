@@ -365,6 +365,132 @@ aterrizando. Casi 17 s después de encontrarla.
    desconocido 29,1 → 24,0 s (−18 %); 3 PX4 38,4 → 25,7 s (−33 %). Ahora lo que más tarda es bajar: 8 m a 1,5 m/s
    (MPC_Z_V_AUTO_DN de PX4) y aterrizar a 0,7 m/s (MPC_LAND_SPEED).
 
+## 3i. Pilotos elegibles y el modelo del empuje (para un futuro algoritmo genético)
+
+**El modelo del empuje (`dynamics.py`) NO simula cada hélice por separado.** Es el de los simuladores de
+planificación (Flightmare en su modo simple, los del FAST Lab): masa puntual con un empuje COLECTIVO (sigue a la orden
+con la constante de tiempo de los motores, 0,03 s) y un eje "arriba" que gira hacia el pedido con la de actitud
+(0,08 s) y hasta 300°/s. El reparto entre las 4 hélices (mezclador), sus pares, la inercia y el bucle de actitud de
+PX4 (a cientos de Hz) están resumidos en esas dos constantes. Para un controlador que mande a cada motor haría falta
+un modelo de sólido rígido de 6 grados de libertad: 4 empujes k·ω², pares de reacción, brazos, tensor de inercia,
+dinámica de cada motor y un paso de ~1 kHz (5 veces más lento de simular).
+
+**Pilotos elegibles (`dron/pilots.py`, selector "Piloto" en la interfaz, `pilot=` en `bench.py`).** Todos comparten
+física, sensores, filtro, mapa, misión y control PX4 con Collision Prevention; cambia cómo se genera la referencia:
+- `clasico` (por defecto): A* + perfil de velocidad + replanificación cosida, sprint, confirmación en vuelo, guía
+  terminal; parámetros ajustados por dron.
+- `fabrica`: la misma planificación con los parámetros de fábrica y sin nada "agresivo" (nunca más rápido de lo que
+  ven sus sensores, se para a confirmar).
+- `reactivo`: campos de potencial (Khatib 1986) sin planificador: atracción a la meta + repulsión de lo que ven los
+  telémetros; si se atasca, rodea por el lado más libre (como los algoritmos Bug). 6 ganancias elegidas a mano.
+
+40 semillas por escenario (éxito, tiempo medio de los éxitos):
+
+| escenario | clásico | fábrica | reactivo |
+|---|---|---|---|
+| PX4, mixto | 40/40, 20,7 s | 40/40, 21,9 s | 36/40, 20,7 s (3 sin tiempo, 1 choque) |
+| PX4, mixto, mapa desconocido | 40/40, 21,2 s | 40/40, 22,6 s | 36/40, 20,2 s (3 sin tiempo, 1 choque) |
+| Mini, bosque extremo, mapa desconocido, viento 6 | 40/40, 23,2 s | 40/40, 26,9 s | 36/40, 24,8 s (4 choques) |
+| PX4, ciudad densa con colinas | 40/40, 22,9 s | 40/40, 24,3 s | 21/40, 34,8 s (15 sin tiempo) |
+| PX4, carrera, mixto | 40/40, 10,9 s | 40/40, 15,1 s | 33/40, 15,6 s (7 sin tiempo) |
+| PX4, búsqueda bayesiana, mapa desconocido | 40/40, 27,2 s | 40/40, 32,1 s | **40/40, 23,9 s** |
+| PX4, almacén, mapa desconocido | 40/40, 36,6 s | 39/40, 43,3 s | 16/40, 49,4 s (24 sin tiempo) |
+
+Lo esperable: el reactivo es tan rápido como el clásico en campo abierto (y el más rápido buscando: va en línea
+recta de punto en punto), pero sin mapa ni planificación se atasca en mínimos locales (una pared entre él y la meta:
+ciudad y almacén) y choca a veces en el bosque. Es la razón por la que los drones reales planifican.
+
+**¿Es viable un algoritmo genético?** Sí, en dos niveles:
+1. *Evolucionar parámetros* (viable ya, horas de cálculo): el genoma son los números de un piloto (las 6 ganancias del
+   reactivo, o los 7 de `tuning.py`), la aptitud la de `eval/tune.py` (éxito, choques ×3, tiempo) en mapas variados, y
+   validación en semillas nuevas. Una generación de 40 individuos × 12 vuelos de ~25 s son ~12 000 s de vuelo:
+   ~2-3 min con 18 procesos. El reactivo es el mejor candidato (le falta justo lo que un GA puede encontrar:
+   cuánto repeler, cuándo darse por atascado, cuánto rodear). Métodos: GA clásico con cruce y mutación, o CMA-ES
+   (mejor para parámetros continuos).
+2. *Neuroevolución de un piloto* (una red pequeña que decida la velocidad a partir de los sensores, o que mande a
+   los motores): viable pero mucho más caro (miles de parámetros: NEAT, CMA-ES o estrategias evolutivas como las de
+   OpenAI 2017); para mandar a cada motor haría falta antes el modelo de 6 grados de libertad. Se añadiría como un
+   piloto más en `pilots.py` y se compararía en el banco de pruebas con los clásicos.
+
+## 3j. Entrenamiento con algoritmo genético (carrera) y simulador más rápido
+
+Todo el detalle, con las fuentes (Swift, Loquercio et al., Foehn et al., SimpleFlight), en `docs/ENTRENAMIENTO.md`.
+Resumen: `eval/evolve.py` evoluciona los parámetros de carrera de un piloto para un dron (márgenes y frenada de
+Collision Prevention, velocidad sin ver la meta, cuánto supera el límite de los sensores, aceleración hasta el 90 % de
+la física, pasillo del sprint, guía terminal y, en el reactivo, sus ganancias) con aptitud por progreso y −5 por
+choque (como Swift), dinámica aleatorizada en cada vuelo (empuje y arrastre ±20 %, retardos ±30 %, viento 0-4 m/s) y
+validación en semillas nuevas; `eval/apply_evolved.py` adopta solo lo que valida (`dron/entrenados.json`, que
+`pilots.py` carga para la carrera); `eval/train_all.py` entrena los 6 seguidos.
+
+1. **Un fallo del reactivo que ningún parámetro podía arreglar:** al agotarse la duración de su recta de referencia
+   (va más lento que ella), la misión creía que había pasado la meta, pasaba a "reintento" y el dron se quedaba
+   parado contra un obstáculo a 23 m. Ahora el reactivo termina un tramo solo al llegar: carrera en mixto 33 → 40/40,
+   ciudad densa 21 → 34/40, almacén 16 → 25/40 (40 semillas). Además, los bordes de la arena lo repelen (con el
+   margen del planificador): se pegaba a ellos empujado por los edificios.
+2. **El diseño del entrenamiento importa más que el algoritmo:** con 1 mundo por escenario distinto en cada generación
+   seleccionaba suerte (validó peor: 55 % frente a 62 %); con "llega o no llega" se estancaba en la 2.ª generación.
+   Mismos mundos para todos + aptitud por progreso: mejora generación a generación.
+3. **Piloto híbrido (nuevo, `pilots.py`):** el reactivo se perdía en los pasillos del almacén (8 de los 12 fallos del
+   Mini en la validación). Como la navegación de ROS (move_base: planificador global + local), el híbrido va hacia
+   un punto de mira 4 m por delante en un camino A* sobre el mapa (recalculado cada segundo) y los campos de
+   potencial esquivan. Sin entrenar, PX4, 48 carreras de validación: híbrido 45/48 en **17,0 s** de media, clásico
+   48/48 en 20,0 s, reactivo entrenado 39/48 en 21,0 s; 0 choques los tres. El más rápido cuando llega.
+4. **Primeros resultados adoptados** (validación en 48 carreras nuevas, detalle en `docs/ENTRENAMIENTO.md`): clásico
+   PX4 20,0 → 18,4 s y Mini 17,4 → 15,3 s, 0 choques; reactivo PX4 77 → 81 % completadas. Rechazados por la
+   validación: reactivo Mini (no mejora) y Matrice (chocaba más). Generaliza a objetivos en movimiento (PX4 contra
+   uno rápido 17,7 → 15,4 s; 2 PX4 persiguiendo en la ciudad 46,0 → 34,8 s) y la evaluación principal sigue en
+   57-58/60 con los tiempos medios 22,5 → 22,1 s (mapa conocido) y 25,2 → 23,4 s (desconocido).
+5. **Carrera: llegar como sea, sin frenar.** Medido: el dron cruzaba la meta a 2-5 m/s tras ir a 7-10, como si
+   fuera a posarse. Tres causas, corregidas solo en carrera: (a) la guía terminal copiaba la velocidad que llevaba
+   (si bajaba un poco, la referencia bajaba con ella): ahora apunta a la meta a la velocidad de carrera; (b) el
+   límite de bajada de los modos automáticos (MPC_Z_V_AUTO_DN, 1,5 m/s en PX4) frenaba el picado hacia la puerta, a
+   1 m del suelo: bajando en diagonal con velocidad horizontal no hay riesgo de anillo de vórtice, así que en
+   carrera se permite el doble (ESTIMADO); (c) los sectores de la cámara de profundidad contaban como obstáculo el
+   SUELO de delante al bajar (volando a 1,5 m entraba en la franja) y Collision Prevention frenaba de 9 a 2 m/s: se
+   descarta lo que está a la altura del suelo que mide el telémetro inferior. Además, impactar a menos de 1 m de la
+   puerta cuenta como llegar, y si la pasa de largo planifica la vuelta esquivando en vez de "pararse en la puerta"
+   (a 10 m/s, con la inercia, un Matrice chocó contra un árbol 4 m más allá). Ahora cruza a 7-9 m/s; PX4 en mixto
+   10,9 → 10,3 s, en azotea 9,3 s; 40/40 y 0 choques en todos los escenarios medidos.
+6. **Simulador ~2× más rápido con los mismos resultados:** rayos con tablas de obstáculos precalculadas y solo los
+   obstáculos a su alcance (diferencia 0 en 3600 rayos), choques solo contra los obstáculos cercanos, y Collision
+   Prevention en aritmética simple (diferencia 10⁻¹⁷ en 3000 casos, 2,3× más rápido). Carrera en bosque extremo sin
+   mapa: 11,9 → 6,3 s de cálculo; los 40 tests, 145 → 71 s.
+
+## 3k. Física de 4 motores, autotune y guiado de interceptor
+
+Bitácora completa, con todo lo medido, en `docs/HITOS.md`. Resumen:
+- **`dynamics.Multirotor6DOF` (física por defecto; `DRON_PHYSICS=simple` vuelve a la de antes):** sólido rígido de
+  6 grados de libertad con 4 empujes independientes y el autopiloto interno de PX4 a 1 kHz (actitud → velocidad
+  angular PID → mezclador con prioridad balanceo/cabeceo > empuje > guiñada → 4 motores de primer orden → pares).
+  Datos del X500 de PX4 en Gazebo (inercias, brazos, momentConstant, constantes de tiempo) y ganancias de fábrica de
+  PX4; Mini y Matrice con brazos de sus fichas e inercias/ganancias ESTIMADAS por proporción. La guiñada necesitó lo
+  que hace PX4: MC_YAW_WEIGHT 0,4, feedforward de velocidad de giro y MPC_YAWRAUTO_ACC (60°/s²). En pantalla, las
+  dos palancas (empuje/guiñada y cabeceo/balanceo) y los 4 motores.
+- **Autotune por maniobras (`eval/autotune.py` → `dron/autotune.json`, todas las misiones):** GA sobre escalón,
+  círculo y giro en 3 drones con dinámica aleatorizada: coste −60 a −64 %; se estabilizan casi 3 veces antes, sin
+  pasarse, y siguen curvas con 3 veces más precisión (`eval/maniobras.py`). En misiones: aterrizaje con viento
+  −25-31 %, 0 fallos nuevos.
+- **Guiado:** navegación proporcional en la llegada, velocidad para que la última curva quepa en lo que puede girar el
+  dron, el sprint vigila también hacia donde se mueve, y MPC_THR_XY_MARG (reserva de empuje horizontal al subir).
+- **Viento fuerte:** con ráfagas de 17-19 m/s (el PX4 aguanta 10), choca con cualquier física o piloto: es un límite
+  físico; lo realista sería no despegar.
+- **Persecución con consignas alcanzables (como PX4):** velocidad pedida en rampa a la aceleración del dron (solo en
+  horizontal), consigna de posición a ≤ 3 m (`DRON_CARROT`), nunca hacia un borde o hacia la altura de la puerta más
+  rápido de lo que puede frenar, con 2 sigmas del GPS de margen. Matrice contra el que huye: 36/40 con 2 choques →
+  39/40 sin choques; objetivo "rápido" 60/60 en los tres drones. Bitácora completa: `docs/HITOS.md`.
+- **Búsqueda de un objetivo en movimiento (carrera):** con búsqueda, el vehículo no emite su posición
+  (`Mission.camera_only`): se le busca con la cámara por toda la arena y, al verlo, a por él. 60/60 los tres drones.
+- **Embestida (`mission.RAM`):** en la carrera, con la meta a la vista y el pasillo libre, inclinación acos(1,1/TWR)
+  (55-60°) y velocidad hasta 1,5 × la del fabricante, guía directa con navegación proporcional. Mini −10 %, PX4 −8 %,
+  sin choques; el Matrice solo con pasillos anchos (`tuning` "ram_clear"); no contra el que huye. `DRON_RAM=0`: sin ella.
+- **Un solo dron de entrenamiento: Holybro X650** (perfil `x650`, `params.TRAINING`), con carga útil
+  (`Simulation(payload=kg)`, hasta ~2,6 kg). Pilotos: clásico e híbrido (se entrenan) y fábrica (referencia); el
+  reactivo puro se retiró (sigue como planificador local del híbrido). Ver docs/HITOS.md, hito 16.
+- **Plan de mejoras** (`docs/PLAN_MEJORAS.md`, hitos 17-18): el límite de velocidad no eran los sensores ni la altura
+  ni la anticolisión (medido); corregido que el híbrido solo usaba 1 de cada 10 lecturas; tirón de carrera 8 m/s³
+  (MPC_JERK_MAX); prealimentación del arrastre (`control.DRAG_FF`) y del giro (`dynamics.TILT_FF`): −2 a −10 % en
+  carrera y círculo con 3 veces menos error.
+
 ## 4. Resultados
 
 Ver `eval/resultados.md` (3 drones × 20 escenarios: viento, ruido, terrenos, metas, lluvia, densidad, carrera,
@@ -421,7 +547,7 @@ desconocido). Con los parámetros ajustados por dron y las trayectorias cosidas 
 
 **Estado:** fases 1 a 6 terminadas (de la 2 faltan las B-splines; de la 6, el puente a PX4 SITL). Después, mapas
 densos (bosque de densidad máxima, almacén interior sin GPS con VIO), trayectorias cosidas al replanificar y ajuste
-automático de parámetros por dron (lección 3e). 35 tests en verde. Resultados en la sección 4. Repositorio privado: https://github.com/Sergio-Osorio09/dron-autonomo (`main`).
+automático de parámetros por dron (lección 3e) y pilotos elegibles (3i). 40 tests en verde. Resultados en la sección 4. Repositorio privado: https://github.com/Sergio-Osorio09/dron-autonomo (`main`).
 Comandos en `CLAUDE.md` (tests, servidor, las tres evaluaciones con `--jobs` y el banco de pruebas).
 
 **Cómo funcionan las fases 3-6** (detalle en los docstrings de `search.py`, `target.py` y `swarm.py`):

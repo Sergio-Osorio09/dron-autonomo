@@ -1,0 +1,352 @@
+{
+  "reactivo": {
+    "px4": {
+      "params": {
+        "cp_acc": 0.95,
+        "cp_margin": 0.362,
+        "cp_react": 0.124,
+        "sense": 1.615,
+        "race": 0.907,
+        "vs_k": 1.316,
+        "acc_k": 1.087,
+        "corridor": 0.754,
+        "term": 0.82,
+        "k_rep": 0.5626,
+        "radius": 5.257,
+        "k_side": 0.846,
+        "slow": 0.0441,
+        "stuck_t": 1.722,
+        "k_tan": 0.534,
+        "esc_t": 7.569
+      },
+      "valid_base": {
+        "fit": 1.4407872910046213,
+        "success": 0.7708333333333334,
+        "crash": 0,
+        "time": 20.963648648648782,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.4664337134543408,
+        "success": 0.8125,
+        "crash": 0,
+        "time": 21.036025641025752,
+        "n": 48
+      }
+    },
+    "mini": {
+      "params": {
+        "cp_acc": 0.95,
+        "cp_margin": 0.3,
+        "cp_react": 0.132,
+        "sense": 0.995,
+        "race": 0.89,
+        "vs_k": 1.0,
+        "acc_k": 1.182,
+        "corridor": 0.525,
+        "term": 0.737,
+        "att_k": 0.892,
+        "rate_pk": 2.0,
+        "rate_ik": 0.971,
+        "rate_dk": 2.551,
+        "xy_p_k": 1.36,
+        "vel_p_k": 1.784,
+        "k_rep": 1.01,
+        "radius": 5.605,
+        "k_side": 0.541,
+        "slow": 0.3,
+        "stuck_t": 2.375,
+        "k_tan": 0.518,
+        "esc_t": 4.571
+      },
+      "valid_base": {
+        "fit": 1.564811111077244,
+        "success": 0.8541666666666666,
+        "crash": 0,
+        "time": 17.814878048780628,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.5835930222574202,
+        "success": 0.8541666666666666,
+        "crash": 0,
+        "time": 16.752804878048966,
+        "n": 48
+      }
+    }
+  },
+  "clasico": {
+    "px4": {
+      "params": {
+        "cp_acc": 0.917,
+        "cp_margin": 0.327,
+        "cp_react": 0.247,
+        "sense": 0.791,
+        "race": 0.932,
+        "vs_k": 1.023,
+        "acc_k": 1.8,
+        "corridor": 0.906,
+        "term": 0.534,
+        "att_k": 1.159,
+        "rate_pk": 1.442,
+        "rate_ik": 1.376,
+        "rate_dk": 0.596,
+        "xy_p_k": 1.29,
+        "vel_p_k": 1.8,
+        "margin": 0.56,
+        "sigma_k": 1.967
+      },
+      "valid_base": {
+        "fit": 1.69482986111111,
+        "success": 1.0,
+        "crash": 0,
+        "time": 18.310208333333403,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.7169357638888856,
+        "success": 1.0,
+        "crash": 0,
+        "time": 16.98385416666686,
+        "n": 48
+      }
+    },
+    "mini": {
+      "params": {
+        "cp_acc": 0.875,
+        "cp_margin": 0.3,
+        "cp_react": 0.118,
+        "sense": 1.425,
+        "race": 0.863,
+        "vs_k": 1.17,
+        "acc_k": 1.509,
+        "corridor": 0.925,
+        "term": 0.858,
+        "att_k": 1.065,
+        "rate_pk": 1.58,
+        "rate_ik": 0.974,
+        "rate_dk": 1.214,
+        "xy_p_k": 1.262,
+        "vel_p_k": 1.558,
+        "margin": 0.478,
+        "sigma_k": 1.359
+      },
+      "valid_base": {
+        "fit": 1.7302934027777732,
+        "success": 1.0,
+        "crash": 0,
+        "time": 16.1823958333336,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.753376736111106,
+        "success": 1.0,
+        "crash": 0,
+        "time": 14.797395833333642,
+        "n": 48
+      }
+    },
+    "x650": {
+      "params": {
+        "cp_acc": 0.863,
+        "cp_margin": 0.427,
+        "cp_react": 0.141,
+        "sense": 1.351,
+        "race": 0.9,
+        "vs_k": 1.159,
+        "acc_k": 2.9,
+        "corridor": 1.2,
+        "term": 0.836,
+        "att_k": 0.967,
+        "rate_pk": 1.494,
+        "rate_ik": 1.399,
+        "rate_dk": 0.299,
+        "xy_p_k": 1.79,
+        "vel_p_k": 1.372,
+        "margin": 0.58,
+        "sigma_k": 2.059
+      },
+      "valid_base": {
+        "fit": 1.5998586474956165,
+        "success": 0.9791666666666666,
+        "crash": 0,
+        "time": 22.890531914894083,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.6949895833333284,
+        "success": 1.0,
+        "crash": 0,
+        "time": 18.300625000000302,
+        "n": 48
+      },
+      "nota": "acc_k 1.689 → 2,9 a mano (26-09-2026): con la prealimentación del arrastre el dron sigue trayectorias más agresivas; 60 semillas por caso: −5 a −7 % (mixto, bosque, ciudad, objetivo rápido, montaña, viento), sin más choques; el rango del genético no pasaba de 1,8"
+    }
+  },
+  "hibrido": {
+    "px4": {
+      "params": {
+        "cp_acc": 0.86,
+        "cp_margin": 0.3,
+        "cp_react": 0.144,
+        "sense": 1.574,
+        "race": 0.895,
+        "vs_k": 1.113,
+        "acc_k": 1.145,
+        "corridor": 0.797,
+        "term": 0.968,
+        "att_k": 1.141,
+        "rate_pk": 1.823,
+        "rate_ik": 0.864,
+        "rate_dk": 2.126,
+        "xy_p_k": 1.102,
+        "vel_p_k": 1.8,
+        "k_rep": 0.1543,
+        "radius": 4.496,
+        "k_side": 0.766,
+        "slow": 0.048,
+        "stuck_t": 2.238,
+        "k_tan": 0.813,
+        "esc_t": 5.908,
+        "look": 3.946
+      },
+      "valid_base": {
+        "fit": 1.5841950348887668,
+        "success": 0.9375,
+        "crash": 1,
+        "time": 14.996777777778165,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.674195964203295,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 14.504886363636787,
+        "n": 48
+      }
+    },
+    "mini": {
+      "params": {
+        "cp_acc": 0.929,
+        "cp_margin": 0.327,
+        "cp_react": 0.102,
+        "sense": 1.07,
+        "race": 0.889,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.615,
+        "term": 0.673,
+        "att_k": 1.008,
+        "rate_pk": 1.266,
+        "rate_ik": 1.297,
+        "rate_dk": 2.702,
+        "xy_p_k": 1.331,
+        "vel_p_k": 1.799,
+        "k_rep": 0.3319,
+        "radius": 5.821,
+        "k_side": 0.507,
+        "slow": 0.0376,
+        "stuck_t": 2.97,
+        "k_tan": 0.611,
+        "esc_t": 5.11,
+        "look": 3.669
+      },
+      "valid_base": {
+        "fit": 1.7615385971289605,
+        "success": 0.9791666666666666,
+        "crash": 0,
+        "time": 12.630851063830164,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.7723124999999968,
+        "success": 1.0,
+        "crash": 0,
+        "time": 13.661250000000186,
+        "n": 48
+      }
+    },
+    "matrice": {
+      "params": {
+        "cp_acc": 0.761,
+        "cp_margin": 0.34,
+        "cp_react": 0.218,
+        "sense": 0.81,
+        "race": 0.916,
+        "vs_k": 1.319,
+        "acc_k": 1.084,
+        "corridor": 0.79,
+        "term": 0.967,
+        "att_k": 1.14,
+        "rate_pk": 0.821,
+        "rate_ik": 0.3,
+        "rate_dk": 2.387,
+        "xy_p_k": 1.203,
+        "vel_p_k": 1.8,
+        "k_rep": 0.4794,
+        "radius": 7.169,
+        "k_side": 0.866,
+        "slow": 0.0497,
+        "stuck_t": 2.881,
+        "k_tan": 0.932,
+        "esc_t": 6.026,
+        "look": 4.284
+      },
+      "valid_base": {
+        "fit": 1.2122197092104725,
+        "success": 0.8958333333333334,
+        "crash": 4,
+        "time": 14.831279069767813,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.5845283598038258,
+        "success": 0.9375,
+        "crash": 1,
+        "time": 14.958777777778135,
+        "n": 48
+      }
+    },
+    "x650": {
+      "params": {
+        "cp_acc": 0.936,
+        "cp_margin": 0.3,
+        "cp_react": 0.345,
+        "sense": 0.772,
+        "race": 0.896,
+        "vs_k": 1.193,
+        "acc_k": 1.808,
+        "corridor": 0.929,
+        "term": 1.103,
+        "att_k": 0.967,
+        "rate_pk": 1.039,
+        "rate_ik": 1.68,
+        "rate_dk": 0.36,
+        "xy_p_k": 1.613,
+        "vel_p_k": 1.657,
+        "k_rep": 0.1,
+        "radius": 5.022,
+        "k_side": 0.581,
+        "slow": 0.029,
+        "stuck_t": 3.422,
+        "k_tan": 0.296,
+        "esc_t": 6.404,
+        "look": 4.48
+      },
+      "valid_base": {
+        "fit": 1.5779330258894446,
+        "success": 0.9583333333333334,
+        "crash": 1,
+        "time": 15.550326086956813,
+        "n": 48
+      },
+      "valid_best": {
+        "fit": 1.7096744089864138,
+        "success": 0.9583333333333334,
+        "crash": 0,
+        "time": 14.900000000000277,
+        "n": 48
+      }
+    }
+  }
+}

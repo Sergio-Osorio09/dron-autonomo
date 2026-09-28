@@ -76,3 +76,19 @@ def test_search_missions_find_and_land():
             s.step(1.0)
         assert s.status == "success" and s.mission.found_t is not None, (strategy, s.status, s.cause)
         assert np.linalg.norm(s.searcher.detections[-1]["pos"][:2] - s.world.goal[:2]) < 2 * CELL
+
+
+def test_moving_target_with_search_is_only_known_once_seen():
+    """Carrera con búsqueda y objetivo en movimiento: el vehículo no emite su posición; el dron lo busca con la
+    cámara y solo al verlo va a por él (antes la simulación quitaba la búsqueda y lo sabía desde el despegue)."""
+    s = Simulation(profile="px4", mode="carrera", motion="rápido", search="bayesiana", seed=1, level="mixto")
+    m = s.mission
+    assert s.config["motion"] == "rápido" and m.camera_only
+    s.step(3.0)
+    assert m.phase == "búsqueda" and m.tracker.x is None      # buscando, sin saber dónde está
+    while not s.done and m.found_t is None:
+        s.step(0.5)
+    assert m.found_t is not None and m.tracker.x is not None   # lo ha visto: ya lo sigue
+    while not s.done:
+        s.step(0.5)
+    assert s.status == "success"

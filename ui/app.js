@@ -4,12 +4,12 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const $ = (id) => document.getElementById(id);
 const els = {
-  profile: $("profile"), level: $("level"), seed: $("seed"), wind: $("wind"), wdir: $("wdir"), gusts: $("gusts"),
+  profile: $("profile"), payload: $("payload"), level: $("level"), seed: $("seed"), wind: $("wind"), wdir: $("wdir"), gusts: $("gusts"),
   noise: $("noise"), newBtn: $("btn-new"), play: $("btn-play"), speed: $("speed"), camera: $("camera"),
-  precision: $("precision"), cp: $("cp"), rays: $("show-rays"), gps: $("show-gps"), viewport: $("viewport"),
+  precision: $("precision"), cp: $("cp"), ram: $("ram"), rays: $("show-rays"), gps: $("show-gps"), viewport: $("viewport"),
   toast: $("toast"), banner: $("banner"), mode: $("mode"), terrain: $("terrain"), density: $("density"),
   goalKind: $("goal-kind"), rain: $("rain"), motion: $("motion"), mapMode: $("map-mode"), view: $("view"),
-  search: $("search"), drones: $("drones"), follow: $("follow"), followField: $("follow-field"),
+  search: $("search"), drones: $("drones"), follow: $("follow"), followField: $("follow-field"), pilot: $("pilot"),
 };
 const PHASES = { "en tierra": "En tierra", despegue: "Despegue", crucero: "Crucero", "aproximación": "Aproximación",
   aterrizaje: "Aterrizaje", aterrizado: "Aterrizado", "búsqueda": "Buscando", "confirmación": "Confirmando", espera: "Esperando (otro la encontró)", carrera: "Carrera", reintento: "Volviendo a la meta", meta: "¡Meta!", "persecución": "Persecución" };
@@ -825,13 +825,56 @@ function lineChart(id, series, yMax, labelEl, label) {
   labelEl.textContent = label;
 }
 
+// física de 4 motores: las dos palancas (lo que el autopiloto "hace con el mando") y la potencia de cada motor
+function drawSticks(f) {
+  const box = $("sticks");
+  const on = f.sticks && f.sticks.length === 4 && f.motors && f.motors.length === 4;
+  box.classList.toggle("hidden", !on);
+  if (!on) return;
+  const cv = $("sticks-c"), ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  const [thr, roll, pitch, yaw] = f.sticks;
+  const k = 3.0;   // las órdenes de par suelen ser pequeñas (±0,1-0,3): se amplían para verlas
+  const clamp = (v) => Math.max(-1, Math.min(1, v));
+  const stick = (cx, label1, label2, x, y) => {
+    const r = 30, cy = 42;
+    ctx.strokeStyle = "rgba(255,255,255,.25)"; ctx.lineWidth = 1;
+    ctx.strokeRect(cx - r, cy - r, 2 * r, 2 * r);
+    ctx.beginPath(); ctx.moveTo(cx - r, cy); ctx.lineTo(cx + r, cy); ctx.moveTo(cx, cy - r); ctx.lineTo(cx, cy + r); ctx.stroke();
+    ctx.fillStyle = "#f472b6";
+    ctx.beginPath(); ctx.arc(cx + clamp(x) * r, cy - clamp(y) * r, 6, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = "#93a1ad"; ctx.font = "9px Segoe UI"; ctx.textAlign = "center";
+    ctx.fillText(label1, cx, cy + r + 11); ctx.fillText(label2, cx, cy + r + 21);
+  };
+  // izquierda: arriba/abajo = empuje (0-1), lados = guiñada (a la izquierda gira a la izquierda)
+  stick(38, "empuje ↕", "guiñada ↔", clamp(-yaw * k), thr * 2 - 1);
+  // derecha: arriba/abajo = cabeceo (arriba = adelante), lados = balanceo
+  stick(118, "cabeceo ↕", "balanceo ↔", clamp(roll * k), clamp(pitch * k));
+  // motores en X (vista desde arriba, el morro hacia arriba): 2 delante-izquierda, 0 delante-derecha,
+  // 1 detrás-izquierda, 3 detrás-derecha
+  const pos = { 2: [-1, -1], 0: [1, -1], 1: [-1, 1], 3: [1, 1] };
+  const mx = 205, my = 42, d = 22;
+  ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(mx - d, my - d); ctx.lineTo(mx + d, my + d); ctx.moveTo(mx + d, my - d); ctx.lineTo(mx - d, my + d); ctx.stroke();
+  for (let i = 0; i < 4; i++) {
+    const [sx, sy] = pos[i], u = f.motors[i];
+    const x = mx + sx * d, y = my + sy * d;
+    ctx.fillStyle = `hsl(${120 - 120 * u}, 80%, 55%)`;   // verde (poco) → rojo (a tope)
+    ctx.beginPath(); ctx.arc(x, y, 5 + 8 * u, 0, 2 * Math.PI); ctx.fill();
+    ctx.fillStyle = "#e6edf2"; ctx.font = "9px Segoe UI"; ctx.textAlign = "center";
+    ctx.fillText(Math.round(100 * u) + "%", x, y + (sy > 0 ? 24 : -16));
+  }
+  ctx.fillStyle = "#93a1ad"; ctx.fillText("motores", mx, my + 3 + 50);
+}
+
 function drawPanel(f) {
   $("h-time").textContent = f.t.toFixed(1) + " s";
   // enjambre: fase, velocidad y altura del dron al que sigue la cámara
   const fk = Number(els.follow.value || 0), fd = fk > 0 && f.swarm ? f.swarm[fk] : null;
   const ph = fd ? fd.phase : f.phase;
-  // sprint de carrera: ve la meta y va a su velocidad máxima
-  $("h-phase").textContent = (PHASES[ph] || ph) + (!fd && f.sprint ? " · a tope" : "") + (fd ? ` (${fk + 1})` : "");
+  // sprint de carrera: ve la meta y va a su velocidad máxima; embestida: además, inclinación desbloqueada
+  $("h-phase").textContent = (PHASES[ph] || ph) + (!fd && f.ram ? " · ¡embestida!" : !fd && f.sprint ? " · a tope" : "")
+    + (fd ? ` (${fk + 1})` : "");
   $("h-speed").textContent = (fd && fd.speed != null ? fd.speed : f.speed).toFixed(1) + " m/s";
   $("h-alt").textContent = (fd ? fd.pos[2] : f.pos[2]).toFixed(1) + " m";
   $("h-tilt").textContent = f.tilt_deg.toFixed(0) + "°";
@@ -844,11 +887,12 @@ function drawPanel(f) {
   $("k-mapreplan").textContent = unknown ? f.map_replans : "—";
   $("k-dist").textContent = fmt(f.distance, 0, " m");
   const sd = searchData;
-  const chase = f.lost != null;   // fase 4: la búsqueda es la de un vehículo perdido, no la de la meta
+  const chase = f.lost > 0;   // fase 4: la búsqueda es la de un vehículo perdido, no la de la meta
   $("k-search").textContent = sd ? (chase ? "tras perderlo (bayesiana)" : LABELS.search[sd.strategy].replace("Buscarla: ", "")) : "no (la conoce)";
   $("k-covered").textContent = sd && !chase ? fmt(100 * sd.covered, 0, " %") : "—";
   $("k-found").textContent = sd && !chase ? (f.found_t != null ? f.found_t.toFixed(1) + " s" : "buscando…") : "—";
   $("k-false").textContent = sd ? sd.detections.filter((d) => d.state === "falsa").length : "—";
+  $("k-pilot").textContent = pilotName;
   $("k-swarm").textContent = f.swarm ? `${f.swarm.length} drones` + (f.found_t != null ? ` · la encontró el ${f.lead + 1}` : "")
     + (fk > 0 && fd ? ` · sigues al ${fk + 1} (${PHASES[fd.phase] || fd.phase})` : "") : "—";
   $("k-speed").textContent = `${f.speed.toFixed(1)} / ${f.ref_speed.toFixed(1)} m/s`;
@@ -865,6 +909,7 @@ function drawPanel(f) {
   $("k-tvel").textContent = f.moving ? fmt(Math.hypot(...f.target_vel), 1, " m/s") : "quieto";
   $("k-lost").textContent = f.lost == null ? "—" : `${f.lost} · ${f.seen_ago < 0.5 ? "a la vista" : "sin verlo " + f.seen_ago.toFixed(0) + " s"}`;
   drawCompass(f);
+  drawSticks(f);
   const vmax = profile ? profile.v_cruise * 1.3 : 10;
   lineChart("chart-speed", [{ key: "ref", color: "#93a1ad", dash: [4, 3] }, { key: "speed", color: "#19a7a0", width: 2.2 }],
     vmax, $("c-speed"), `real ${f.speed.toFixed(1)} · plan ${f.ref_speed.toFixed(1)} m/s (escala ${vmax.toFixed(0)})`);
@@ -888,7 +933,7 @@ function drawPanel(f) {
   if (f.status !== "flying") {
     const race = f.mode === "carrera";
     const txt = { success: race ? "¡Meta cruzada!" : "¡Aterrizaje en la plataforma!", missed: "Aterrizó fuera de la plataforma",
-      crash: "¡Choque!", timeout: "Se acabó el tiempo" }[f.status];
+      crash: "¡Choque!", timeout: "Se acabó el tiempo", grounded: "No despega: demasiado viento" }[f.status];
     const land = Math.hypot(f.pos[0] - f.pad[0], f.pos[1] - f.pad[1]);
     const sub = f.status === "success"
       ? (race ? `${f.t.toFixed(2)} s · velocidad máxima ${f.max_speed.toFixed(1)} m/s` : `${f.t.toFixed(1)} s · a ${(land * 100).toFixed(0)} cm del centro · batería ${f.battery.toFixed(1)} %`)
@@ -909,14 +954,14 @@ function showProfile(p) {
     ["Subida / bajada", `${p.v_up} / ${p.v_down} m/s`],
     ["Aceleración / tirón", `${p.acc_hor} m/s² · ${p.jerk} m/s³`],
     ["Inclinación máx.", `${p.tilt_max_deg}°`],
-    ["Empuje/peso", `${p.twr} (estimado)`],
+    ["Empuje/peso", `${p.twr.toFixed(2)} (estimado)`],
     ["Batería", `${p.battery_wh.toFixed(1)} Wh · ${(60 * p.battery_wh / p.hover_power_w).toFixed(0)} min`],
     ["Viento que soporta", `${p.wind_max} m/s`],
     ["GPS (1σ)", `${p.gps_sigma} m`],
     ["Telémetros", `${p.sensor_range} m`],
   ];
   $("profile-kv").innerHTML = rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join("");
-  $("profile-src").textContent = "Fuentes: fichas técnicas de DJI (Mini 3, Matrice 350 RTK) y parámetros por defecto de PX4. Ver dron/params.py.";
+  $("profile-src").textContent = "Fuentes: documentación de Holybro (X650 Development Kit), T-Motor (MN4014) y parámetros por defecto de PX4; lo no publicado, ESTIMADO. Ver dron/params.py.";
   buildDrone(p.radius);
 }
 
@@ -973,13 +1018,17 @@ function config() {
     noise: els.noise.value, precision_landing: els.precision.checked, collision_prevention: els.cp.checked,
     mode: els.mode.value, terrain: els.terrain.value, density: els.density.value, goal_kind: els.goalKind.value,
     rain: els.rain.value, motion: els.motion.value, map_mode: els.mapMode.value, search: els.search.value,
-    drones: Number(els.drones.value) };
+    drones: Number(els.drones.value), pilot: els.pilot.value, ram: els.ram.checked,
+    payload: Number(els.payload.value) };
 }
 // --- repeticiones (fase 6): cada vuelo se graba entero en el navegador; se puede repetir, guardar y abrir
 let recorded = [], replay = null;
 let locMode = "gps";   // localización: GPS (exterior) o VIO (almacén)
+let pilotName = "—";      // algoritmo que pilota este vuelo (también en las repeticiones)
 function loadFlight(f) {   // prepara la escena con el primer fotograma (completo) de un vuelo
   locMode = f.config.localization || "gps";
+  const po = [...els.pilot.options].find((o) => o.value === (f.config.pilot || "clasico"));
+  pilotName = po ? po.textContent : (f.config.pilot || "clasico");
   showProfile(f.profile);
   frame = f;
   windField = f.wind_field;
@@ -1062,8 +1111,24 @@ $("file-open").onchange = async (e) => {
   e.target.value = "";
 };
 els.play.onclick = () => setPlaying(!playing);
-for (const el of [els.profile, els.level, els.gusts, els.noise, els.precision, els.cp, els.mode, els.terrain,
-  els.density, els.goalKind, els.rain, els.motion, els.mapMode, els.search, els.drones]) el.onchange = newFlight;
+for (const el of [els.profile, els.payload, els.level, els.gusts, els.noise, els.precision, els.cp, els.ram, els.terrain,
+  els.density, els.goalKind, els.rain, els.mapMode, els.drones, els.pilot]) el.onchange = newFlight;
+// el objetivo en movimiento solo existe en Carrera (la plataforma va sobre un vehículo: no se puede aterrizar en
+// ella). Con búsqueda, el vehículo no emite su posición: el dron lo busca con la cámara y, al verlo, va a por él
+els.motion.onchange = () => {
+  if (els.motion.value !== "fija" && els.mode.value !== "carrera") {
+    els.mode.value = "carrera";
+    toast("El objetivo en movimiento va sobre un vehículo: la misión pasa a Carrera");
+  }
+  newFlight();
+};
+els.mode.onchange = els.search.onchange = () => {
+  if (els.motion.value !== "fija" && els.mode.value !== "carrera") {
+    els.motion.value = "fija";
+    toast("Para aterrizar, la plataforma tiene que estar quieta: el objetivo pasa a Quieto");
+  }
+  newFlight();
+};
 els.view.onchange = applyView;
 els.wind.oninput = () => { $("wind-v").textContent = `${els.wind.value} m/s`; };
 els.wdir.oninput = () => { $("wdir-v").textContent = `${els.wdir.value}°`; };
@@ -1099,9 +1164,19 @@ document.addEventListener("keydown", (e) => {
   fill(els.motion, options.motions, LABELS.motion);
   fill(els.mapMode, options.map_modes, LABELS.map);
   fill(els.search, options.searches, LABELS.search);
+  for (const p of options.pilots || []) {   // algoritmos de pilotaje (dron/pilots.py)
+    const o = document.createElement("option"); o.value = p.key; o.textContent = p.name; o.title = p.description;
+    els.pilot.appendChild(o);
+  }
+  const pilotTip = () => {
+    const p = (options.pilots || []).find((q) => q.key === els.pilot.value);
+    $("pilot-field").title = p ? p.description : "";
+  };
+  els.pilot.addEventListener("change", pilotTip);
+  pilotTip();
   els.search.value = "no";
   els.mapMode.value = "desconocido";
-  els.profile.value = "mini"; els.level.value = "mixto"; els.noise.value = "realista";
+  els.profile.value = "x650"; els.level.value = "mixto"; els.noise.value = "realista";
   els.terrain.value = "colinas"; els.density.value = "normal"; els.goalKind.value = "suelo"; els.rain.value = "no";
   els.motion.value = "fija";
   await newFlight();

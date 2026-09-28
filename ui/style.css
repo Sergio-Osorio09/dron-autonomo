@@ -163,6 +163,9 @@ kbd { font: 12px Consolas, monospace; background: var(--surface-2); border: 1px 
 .compass { position: absolute; top: 12px; right: 12px; background: rgba(10, 16, 22, .62); border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, .08); pointer-events: none; }
 .compass canvas { display: block; }
+.sticks { position: absolute; top: 116px; right: 12px; background: rgba(10, 16, 22, .62); border-radius: 12px;
+  padding: 4px; }
+.sticks canvas { display: block; }
 .legend i.grad { width: 30px; background: linear-gradient(90deg, #3b82f6, #22c55e, #facc15, #ef4444); }
 .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
 @media (max-width: 800px) { .charts { grid-template-columns: 1fr; } }

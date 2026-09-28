@@ -28,6 +28,7 @@ nueva a la que ya seguía, como Fast-Planner y EGO-Planner.
 | Mapa | **Desconocido** (lo construye con sus sensores, fase 2) o **conocido** (fase 1, para comparar) |
 | Misión | **Aterrizar** en la meta o **Carrera** (cruzar la meta sin frenar; en cuanto ve la meta, **sprint a la velocidad máxima del fabricante**: 16 m/s el Mini 3, 23 m/s el Matrice 350, 12 m/s PX4; se guarda el mejor tiempo) |
 | Dron | Mini 3 (249 g) · genérico PX4 · Matrice 350 RTK |
+| Piloto | el algoritmo que pilota: **Clásico ajustado** (A* + PX4, por defecto) · **PX4 de fábrica** (prudente) · **Reactivo** (campos de potencial, sin planificador) · **Híbrido** (A* global + reactivo local, como la navegación de ROS) |
 | Nivel y densidad | bosque / ciudad / mixto / **almacén** (interior, sin GPS) · densidad baja, normal, alta, extrema o máxima |
 | Terreno | plano · colinas · montañoso · precipicios (mesetas con acantilados) |
 | Meta | en el suelo · en una azotea · en una cima · en el aire (carrera) · al azar |
@@ -39,6 +40,11 @@ nueva a la que ya seguía, como Fast-Planner y EGO-Planner.
 
 ## Qué incluye
 
+- **Física de 4 motores (por defecto):** sólido rígido de 6 grados de libertad con cuatro empujes independientes y el
+  autopiloto interno de PX4 a 1 kHz (actitud → velocidad angular → mezclador → motores), con los datos del X500 de
+  PX4. En pantalla se ven las dos palancas que "mueve" el autopiloto (empuje/guiñada y cabeceo/balanceo) y la potencia
+  de cada motor. Un **autotune** con algoritmo genético ajusta las ganancias de cada dron: se colocan 3 veces más
+  rápido y siguen curvas con 3 veces más precisión (`eval/maniobras.py`). Bitácora en [docs/HITOS.md](docs/HITOS.md).
 - **Física realista (200 Hz):** el dron solo acelera inclinándose. Se modelan empuje limitado, inclinación
   máxima, arrastre (deducido de la velocidad máxima del fabricante), inercia de motores y actitud, y aterrizajes
   suaves o duros.
@@ -73,6 +79,10 @@ nueva a la que ya seguía, como Fast-Planner y EGO-Planner.
 - **Interior sin GPS:** en el almacén el filtro se alimenta de **odometría visual-inercial** (ruido de 5 cm y
   deriva del 1 % de lo recorrido, como una Intel T265). El mapa guarda el centroide de los ecos de cada celda para
   que un pasillo de 2,4 m no se estreche con celdas de 1 m.
+- **Entrenamiento con algoritmo genético (carrera):** `eval/evolve.py` evoluciona los parámetros de cada piloto y
+  dron con una aptitud como la de Swift (progreso hacia la meta, −5 por choque), dinámica aleatorizada en cada vuelo
+  (empuje, arrastre, retardos, viento) y validación en semillas nuevas; solo se adopta lo que valida. Método y fuentes
+  en [docs/ENTRENAMIENTO.md](docs/ENTRENAMIENTO.md).
 - **Ajuste automático por dron:** `eval/tune.py` busca (al azar y refinando alrededor del mejor) los parámetros de
   Collision Prevention, márgenes y velocidad que dan más éxito y menos tiempo en mapas densos y con viento, y los
   valida en semillas nuevas; quedan en `dron/tuning.py` (`DRON_TUNED=0` vuelve a los de fábrica).
@@ -147,7 +157,7 @@ Tablas completas (mismos mundos para todos) en [eval/resultados.md](eval/resulta
 ```bash
 pip install -r requirements.txt
 python server.py            # http://127.0.0.1:7873
-python -m pytest -q         # 35 tests
+python -m pytest -q         # 51 tests
 python eval/eval_headless.py --flights 1 --jobs 10 --md eval/resultados.md     # fases 1, 2 y 4
 python eval/eval_search.py --jobs 10 --md eval/resultados_busqueda.md          # fase 3
 python eval/bench.py --n 30 profile=px4 search=bayesiana                       # banco de pruebas

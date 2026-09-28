@@ -1,0 +1,235 @@
+﻿=== inicio: 2026-09-26 00:16 ===
+=== reactivo px4: ya entrenado y validado, se salta
+=== reactivo mini (0 min desde el inicio)
+generación  1: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.419 · 83 s
+generación  2: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.515 · 149 s
+generación  3: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.532 · 208 s
+generación  4: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.456 · 270 s
+generación  5: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.545 · 332 s
+generación  6: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.518 · 394 s
+generación  7: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.549 · 456 s
+generación  8: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.585 · 517 s
+generación  9: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.521 · 578 s
+generación 10: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.615 · 639 s
+generación 11: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.586 · 700 s
+generación 12: mejor aptitud 1.624 · éxito 92 % · choques 0 · tiempo 18.2 s (12 vuelos) · media 1.495 · 761 s
+
+mejor: {"cp_acc": 0.9, "cp_margin": 0.41, "cp_react": 0.1, "sense": 1.15, "race": 0.9, "vs_k": 1.0, "acc_k": 1.0, "corridor": 0.6, "term": 0.7, "k_rep": 6.0, "radius": 6.0, "k_side": 0.6, "slow": 0.35, "stuck_t": 2.5, "k_tan": 0.8, "esc_t": 6.0}
+validación (semillas nuevas, 48 vuelos):
+  antes     aptitud 1.364 · éxito 75 % · choques 1 · tiempo 17.8 s (48 vuelos)
+  entrenado aptitud 1.364 · éxito 75 % · choques 1 · tiempo 17.8 s (48 vuelos)
+(788 s)
+reactivo/mini      antes: aptitud 1.364, éxito 75 %, choques 1 · entrenado: aptitud 1.364, éxito 75 %, choques 1 → no mejora: se queda como estaba
+reactivo/px4       antes: aptitud 1.441, éxito 77 %, choques 0 · entrenado: aptitud 1.466, éxito 81 %, choques 0 → ADOPTADO
+guardado en C:\Users\SERGIO\Desktop\Clones\Laya\dron-autonomo\dron\entrenados.json
+=== reactivo matrice (13 min desde el inicio)
+generación  1: mejor aptitud 1.338 · éxito 75 % · choques 0 · tiempo 24.8 s (12 vuelos) · media 0.858 · 153 s
+generación  2: mejor aptitud 1.352 · éxito 75 % · choques 0 · tiempo 24.1 s (12 vuelos) · media 1.085 · 280 s
+generación  3: mejor aptitud 1.363 · éxito 75 % · choques 0 · tiempo 23.5 s (12 vuelos) · media 1.138 · 404 s
+generación  4: mejor aptitud 1.370 · éxito 75 % · choques 0 · tiempo 23.5 s (12 vuelos) · media 1.128 · 523 s
+generación  5: mejor aptitud 1.384 · éxito 75 % · choques 0 · tiempo 22.6 s (12 vuelos) · media 1.233 · 660 s
+generación  6: mejor aptitud 1.484 · éxito 83 % · choques 0 · tiempo 22.2 s (12 vuelos) · media 1.338 · 803 s
+generación  7: mejor aptitud 1.484 · éxito 83 % · choques 0 · tiempo 22.2 s (12 vuelos) · media 1.328 · 919 s
+generación  8: mejor aptitud 1.489 · éxito 83 % · choques 0 · tiempo 21.7 s (12 vuelos) · media 1.389 · 1030 s
+generación  9: mejor aptitud 1.490 · éxito 83 % · choques 0 · tiempo 21.7 s (12 vuelos) · media 1.300 · 1141 s
+generación 10: mejor aptitud 1.491 · éxito 83 % · choques 0 · tiempo 21.7 s (12 vuelos) · media 1.409 · 1244 s
+generación 11: mejor aptitud 1.496 · éxito 83 % · choques 0 · tiempo 21.3 s (12 vuelos) · media 1.453 · 1344 s
+generación 12: mejor aptitud 1.499 · éxito 83 % · choques 0 · tiempo 21.0 s (12 vuelos) · media 1.411 · 1443 s
+
+mejor: {"cp_acc": 0.755, "cp_margin": 0.3, "cp_react": 0.155, "sense": 1.208, "race": 0.874, "vs_k": 1.03, "acc_k": 1.108, "corridor": 0.431, "term": 0.792, "k_rep": 4.855, "radius": 5.494, "k_side": 0.51, "slow": 0.045, "stuck_t": 2.257, "k_tan": 0.622, "esc_t": 5.519}
+validación (semillas nuevas, 48 vuelos):
+  antes     aptitud 1.094 · éxito 65 % · choques 2 · tiempo 22.2 s (48 vuelos)
+  entrenado aptitud 0.813 · éxito 69 % · choques 5 · tiempo 22.3 s (48 vuelos)
+(1506 s)
+reactivo/matrice   antes: aptitud 1.094, éxito 65 %, choques 2 · entrenado: aptitud 0.813, éxito 69 %, choques 5 → no mejora: se queda como estaba
+reactivo/mini      antes: aptitud 1.364, éxito 75 %, choques 1 · entrenado: aptitud 1.364, éxito 75 %, choques 1 → no mejora: se queda como estaba
+reactivo/px4       antes: aptitud 1.441, éxito 77 %, choques 0 · entrenado: aptitud 1.466, éxito 81 %, choques 0 → ADOPTADO
+guardado en C:\Users\SERGIO\Desktop\Clones\Laya\dron-autonomo\dron\entrenados.json
+=== clasico px4 (38 min desde el inicio)
+generación  1: mejor aptitud 1.688 · éxito 100 % · choques 0 · tiempo 18.7 s (12 vuelos) · media 1.662 · 81 s
+generación  2: mejor aptitud 1.706 · éxito 100 % · choques 0 · tiempo 17.7 s (12 vuelos) · media 1.681 · 147 s
+generación  3: mejor aptitud 1.709 · éxito 100 % · choques 0 · tiempo 17.4 s (12 vuelos) · media 1.693 · 210 s
+generación  4: mejor aptitud 1.709 · éxito 100 % · choques 0 · tiempo 17.4 s (12 vuelos) · media 1.699 · 272 s
+generación  5: mejor aptitud 1.714 · éxito 100 % · choques 0 · tiempo 17.1 s (12 vuelos) · media 1.701 · 334 s
+generación  6: mejor aptitud 1.714 · éxito 100 % · choques 0 · tiempo 17.1 s (12 vuelos) · media 1.700 · 395 s
+generación  7: mejor aptitud 1.714 · éxito 100 % · choques 0 · tiempo 17.1 s (12 vuelos) · media 1.705 · 455 s
+generación  8: mejor aptitud 1.714 · éxito 100 % · choques 0 · tiempo 17.1 s (12 vuelos) · media 1.705 · 516 s
+generación  9: mejor aptitud 1.714 · éxito 100 % · choques 0 · tiempo 17.1 s (12 vuelos) · media 1.702 · 577 s
+generación 10: mejor aptitud 1.715 · éxito 100 % · choques 0 · tiempo 17.1 s (12 vuelos) · media 1.705 · 637 s
+generación 11: mejor aptitud 1.715 · éxito 100 % · choques 0 · tiempo 17.1 s (12 vuelos) · media 1.707 · 697 s
+generación 12: mejor aptitud 1.716 · éxito 100 % · choques 0 · tiempo 17.1 s (12 vuelos) · media 1.706 · 758 s
+
+mejor: {"cp_acc": 0.943, "cp_margin": 0.363, "cp_react": 0.257, "sense": 1.228, "race": 0.921, "vs_k": 1.021, "acc_k": 1.678, "corridor": 0.993, "term": 1.022, "margin": 0.437, "sigma_k": 1.85}
+validación (semillas nuevas, 48 vuelos):
+  antes     aptitud 1.666 · éxito 100 % · choques 0 · tiempo 20.0 s (48 vuelos)
+  entrenado aptitud 1.694 · éxito 100 % · choques 0 · tiempo 18.4 s (48 vuelos)
+(798 s)
+clasico/px4        antes: aptitud 1.666, éxito 100 %, choques 0 · entrenado: aptitud 1.694, éxito 100 %, choques 0 → ADOPTADO
+reactivo/matrice   antes: aptitud 1.094, éxito 65 %, choques 2 · entrenado: aptitud 0.813, éxito 69 %, choques 5 → no mejora: se queda como estaba
+reactivo/mini      antes: aptitud 1.364, éxito 75 %, choques 1 · entrenado: aptitud 1.364, éxito 75 %, choques 1 → no mejora: se queda como estaba
+reactivo/px4       antes: aptitud 1.441, éxito 77 %, choques 0 · entrenado: aptitud 1.466, éxito 81 %, choques 0 → ADOPTADO
+guardado en C:\Users\SERGIO\Desktop\Clones\Laya\dron-autonomo\dron\entrenados.json
+=== clasico mini (52 min desde el inicio)
+generación  1: mejor aptitud 1.733 · éxito 100 % · choques 0 · tiempo 16.0 s (12 vuelos) · media 1.713 · 66 s
+generación  2: mejor aptitud 1.743 · éxito 100 % · choques 0 · tiempo 15.4 s (12 vuelos) · media 1.730 · 118 s
+generación  3: mejor aptitud 1.744 · éxito 100 % · choques 0 · tiempo 15.3 s (12 vuelos) · media 1.736 · 170 s
+generación  4: mejor aptitud 1.744 · éxito 100 % · choques 0 · tiempo 15.3 s (12 vuelos) · media 1.737 · 222 s
+generación  5: mejor aptitud 1.744 · éxito 100 % · choques 0 · tiempo 15.3 s (12 vuelos) · media 1.734 · 274 s
+generación  6: mejor aptitud 1.749 · éxito 100 % · choques 0 · tiempo 15.1 s (12 vuelos) · media 1.739 · 325 s
+generación  7: mejor aptitud 1.749 · éxito 100 % · choques 0 · tiempo 15.1 s (12 vuelos) · media 1.738 · 376 s
+generación  8: mejor aptitud 1.749 · éxito 100 % · choques 0 · tiempo 15.1 s (12 vuelos) · media 1.738 · 427 s
+generación  9: mejor aptitud 1.749 · éxito 100 % · choques 0 · tiempo 15.1 s (12 vuelos) · media 1.743 · 477 s
+generación 10: mejor aptitud 1.749 · éxito 100 % · choques 0 · tiempo 15.1 s (12 vuelos) · media 1.743 · 528 s
+generación 11: mejor aptitud 1.749 · éxito 100 % · choques 0 · tiempo 15.1 s (12 vuelos) · media 1.736 · 580 s
+generación 12: mejor aptitud 1.753 · éxito 100 % · choques 0 · tiempo 14.8 s (12 vuelos) · media 1.740 · 632 s
+
+mejor: {"cp_acc": 0.947, "cp_margin": 0.302, "cp_react": 0.171, "sense": 0.881, "race": 0.913, "vs_k": 1.779, "acc_k": 1.556, "corridor": 0.931, "term": 1.139, "margin": 0.514, "sigma_k": 1.797}
+validación (semillas nuevas, 48 vuelos):
+  antes     aptitud 1.710 · éxito 100 % · choques 0 · tiempo 17.4 s (48 vuelos)
+  entrenado aptitud 1.725 · éxito 98 % · choques 0 · tiempo 15.3 s (48 vuelos)
+(669 s)
+clasico/mini       antes: aptitud 1.710, éxito 100 %, choques 0 · entrenado: aptitud 1.725, éxito 98 %, choques 0 → ADOPTADO
+clasico/px4        antes: aptitud 1.666, éxito 100 %, choques 0 · entrenado: aptitud 1.694, éxito 100 %, choques 0 → ADOPTADO
+reactivo/matrice   antes: aptitud 1.094, éxito 65 %, choques 2 · entrenado: aptitud 0.813, éxito 69 %, choques 5 → no mejora: se queda como estaba
+reactivo/mini      antes: aptitud 1.364, éxito 75 %, choques 1 · entrenado: aptitud 1.364, éxito 75 %, choques 1 → no mejora: se queda como estaba
+reactivo/px4       antes: aptitud 1.441, éxito 77 %, choques 0 · entrenado: aptitud 1.466, éxito 81 %, choques 0 → ADOPTADO
+guardado en C:\Users\SERGIO\Desktop\Clones\Laya\dron-autonomo\dron\entrenados.json
+=== clasico matrice (63 min desde el inicio)
+generación  1: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (12 vuelos) · media 1.689 · 121 s
+generación  2: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (12 vuelos) · media 1.713 · 215 s
+generación  3: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (12 vuelos) · media 1.715 · 309 s
+generación  4: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (12 vuelos) · media 1.690 · 411 s
+generación  5: mejor aptitud 1.728 · éxito 100 % · choques 0 · tiempo 16.3 s (12 vuelos) · media 1.717 · 514 s
+generación  6: mejor aptitud 1.728 · éxito 100 % · choques 0 · tiempo 16.3 s (12 vuelos) · media 1.722 · 616 s
+generación  7: mejor aptitud 1.729 · éxito 100 % · choques 0 · tiempo 16.3 s (12 vuelos) · media 1.722 · 713 s
+generación  8: mejor aptitud 1.734 · éxito 100 % · choques 0 · tiempo 16.0 s (12 vuelos) · media 1.724 · 791 s
+generación  9: mejor aptitud 1.734 · éxito 100 % · choques 0 · tiempo 16.0 s (12 vuelos) · media 1.723 · 865 s
+generación 10: mejor aptitud 1.734 · éxito 100 % · choques 0 · tiempo 16.0 s (12 vuelos) · media 1.725 · 937 s
+generación 11: mejor aptitud 1.737 · éxito 100 % · choques 0 · tiempo 15.8 s (12 vuelos) · media 1.723 · 1010 s
+generación 12: mejor aptitud 1.737 · éxito 100 % · choques 0 · tiempo 15.8 s (12 vuelos) · media 1.695 · 1082 s
+
+mejor: {"cp_acc": 0.913, "cp_margin": 0.387, "cp_react": 0.059, "sense": 0.466, "race": 0.883, "vs_k": 1.72, "acc_k": 1.57, "corridor": 0.469, "term": 0.924, "margin": 0.523, "sigma_k": 2.159}
+validación (semillas nuevas, 48 vuelos):
+  antes     aptitud 1.706 · éxito 100 % · choques 0 · tiempo 17.7 s (48 vuelos)
+  entrenado aptitud 1.719 · éxito 100 % · choques 0 · tiempo 16.9 s (48 vuelos)
+(1127 s)
+clasico/matrice    antes: aptitud 1.706, éxito 100 %, choques 0 · entrenado: aptitud 1.719, éxito 100 %, choques 0 → ADOPTADO
+clasico/mini       antes: aptitud 1.710, éxito 100 %, choques 0 · entrenado: aptitud 1.725, éxito 98 %, choques 0 → ADOPTADO
+clasico/px4        antes: aptitud 1.666, éxito 100 %, choques 0 · entrenado: aptitud 1.694, éxito 100 %, choques 0 → ADOPTADO
+reactivo/matrice   antes: aptitud 1.094, éxito 65 %, choques 2 · entrenado: aptitud 0.813, éxito 69 %, choques 5 → no mejora: se queda como estaba
+reactivo/mini      antes: aptitud 1.364, éxito 75 %, choques 1 · entrenado: aptitud 1.364, éxito 75 %, choques 1 → no mejora: se queda como estaba
+reactivo/px4       antes: aptitud 1.441, éxito 77 %, choques 0 · entrenado: aptitud 1.466, éxito 81 %, choques 0 → ADOPTADO
+guardado en C:\Users\SERGIO\Desktop\Clones\Laya\dron-autonomo\dron\entrenados.json
+FIN (81 min)
+=== ronda 2: 2026-09-26 01:38 ===
+=== hibrido px4 (0 min desde el inicio)
+generación  1: mejor aptitud 1.714 · éxito 100 % · choques 0 · tiempo 17.1 s (18 vuelos) · media 1.606 · 140 s
+generación  2: mejor aptitud 1.715 · éxito 100 % · choques 0 · tiempo 17.1 s (18 vuelos) · media 1.629 · 260 s
+generación  3: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.679 · 374 s
+generación  4: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.681 · 487 s
+generación  5: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.681 · 599 s
+generación  6: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.673 · 714 s
+generación  7: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.631 · 829 s
+generación  8: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.665 · 941 s
+generación  9: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.661 · 1055 s
+generación 10: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.698 · 1168 s
+generación 11: mejor aptitud 1.731 · éxito 100 % · choques 0 · tiempo 16.2 s (18 vuelos) · media 1.666 · 1280 s
+generación 12: mejor aptitud 1.731 · éxito 100 % · choques 0 · tiempo 16.2 s (18 vuelos) · media 1.660 · 1396 s
+generación 13: mejor aptitud 1.731 · éxito 100 % · choques 0 · tiempo 16.2 s (18 vuelos) · media 1.682 · 1510 s
+generación 14: mejor aptitud 1.731 · éxito 100 % · choques 0 · tiempo 16.2 s (18 vuelos) · media 1.714 · 1621 s
+generación 15: mejor aptitud 1.731 · éxito 100 % · choques 0 · tiempo 16.2 s (18 vuelos) · media 1.696 · 1735 s
+generación 16: mejor aptitud 1.731 · éxito 100 % · choques 0 · tiempo 16.2 s (18 vuelos) · media 1.681 · 1848 s
+generación 17: mejor aptitud 1.731 · éxito 100 % · choques 0 · tiempo 16.2 s (18 vuelos) · media 1.716 · 1959 s
+generación 18: mejor aptitud 1.731 · éxito 100 % · choques 0 · tiempo 16.2 s (18 vuelos) · media 1.661 · 2073 s
+generación 19: mejor aptitud 1.732 · éxito 100 % · choques 0 · tiempo 16.1 s (18 vuelos) · media 1.697 · 2183 s
+generación 20: mejor aptitud 1.734 · éxito 100 % · choques 0 · tiempo 16.0 s (18 vuelos) · media 1.706 · 2292 s
+
+mejor: {"cp_acc": 0.688, "cp_margin": 0.383, "cp_react": 0.135, "sense": 1.032, "race": 0.964, "vs_k": 1.438, "acc_k": 1.14, "corridor": 0.937, "term": 0.981, "k_rep": 4.355, "radius": 4.938, "k_side": 0.562, "slow": 0.09, "stuck_t": 3.959, "k_tan": 0.882, "esc_t": 2.788, "look": 4.608}
+validación (semillas nuevas, 48 vuelos):
+  antes     aptitud 1.662 · éxito 94 % · choques 0 · tiempo 17.0 s (48 vuelos)
+  entrenado aptitud 1.630 · éxito 90 % · choques 0 · tiempo 16.2 s (48 vuelos)
+(2335 s)
+clasico/matrice    antes: aptitud 1.706, éxito 100 %, choques 0 · entrenado: aptitud 1.719, éxito 100 %, choques 0 → ADOPTADO
+clasico/mini       antes: aptitud 1.710, éxito 100 %, choques 0 · entrenado: aptitud 1.725, éxito 98 %, choques 0 → ADOPTADO
+clasico/px4        antes: aptitud 1.666, éxito 100 %, choques 0 · entrenado: aptitud 1.694, éxito 100 %, choques 0 → ADOPTADO
+hibrido/px4        antes: aptitud 1.662, éxito 94 %, choques 0 · entrenado: aptitud 1.630, éxito 90 %, choques 0 → no mejora: se queda como estaba
+reactivo/matrice   antes: aptitud 1.094, éxito 65 %, choques 2 · entrenado: aptitud 0.813, éxito 69 %, choques 5 → no mejora: se queda como estaba
+reactivo/mini      antes: aptitud 1.364, éxito 75 %, choques 1 · entrenado: aptitud 1.364, éxito 75 %, choques 1 → no mejora: se queda como estaba
+reactivo/px4       antes: aptitud 1.441, éxito 77 %, choques 0 · entrenado: aptitud 1.466, éxito 81 %, choques 0 → ADOPTADO
+guardado en C:\Users\SERGIO\Desktop\Clones\Laya\dron-autonomo\dron\entrenados.json
+=== hibrido mini (39 min desde el inicio)
+generación  1: mejor aptitud 1.763 · éxito 100 % · choques 0 · tiempo 14.2 s (18 vuelos) · media 1.591 · 122 s
+generación  2: mejor aptitud 1.767 · éxito 100 % · choques 0 · tiempo 14.0 s (18 vuelos) · media 1.641 · 223 s
+generación  3: mejor aptitud 1.767 · éxito 100 % · choques 0 · tiempo 14.0 s (18 vuelos) · media 1.689 · 316 s
+generación  4: mejor aptitud 1.767 · éxito 100 % · choques 0 · tiempo 14.0 s (18 vuelos) · media 1.611 · 409 s
+generación  5: mejor aptitud 1.768 · éxito 100 % · choques 0 · tiempo 13.9 s (18 vuelos) · media 1.675 · 502 s
+generación  6: mejor aptitud 1.768 · éxito 100 % · choques 0 · tiempo 13.9 s (18 vuelos) · media 1.661 · 592 s
+generación  7: mejor aptitud 1.768 · éxito 100 % · choques 0 · tiempo 13.9 s (18 vuelos) · media 1.661 · 684 s
+generación  8: mejor aptitud 1.768 · éxito 100 % · choques 0 · tiempo 13.9 s (18 vuelos) · media 1.698 · 773 s
+generación  9: mejor aptitud 1.770 · éxito 100 % · choques 0 · tiempo 13.8 s (18 vuelos) · media 1.707 · 863 s
+generación 10: mejor aptitud 1.774 · éxito 100 % · choques 0 · tiempo 13.6 s (18 vuelos) · media 1.713 · 952 s
+generación 11: mejor aptitud 1.774 · éxito 100 % · choques 0 · tiempo 13.6 s (18 vuelos) · media 1.745 · 1041 s
+generación 12: mejor aptitud 1.774 · éxito 100 % · choques 0 · tiempo 13.6 s (18 vuelos) · media 1.697 · 1129 s
+generación 13: mejor aptitud 1.774 · éxito 100 % · choques 0 · tiempo 13.6 s (18 vuelos) · media 1.647 · 1219 s
+generación 14: mejor aptitud 1.774 · éxito 100 % · choques 0 · tiempo 13.6 s (18 vuelos) · media 1.721 · 1313 s
+generación 15: mejor aptitud 1.776 · éxito 100 % · choques 0 · tiempo 13.5 s (18 vuelos) · media 1.691 · 1408 s
+generación 16: mejor aptitud 1.776 · éxito 100 % · choques 0 · tiempo 13.5 s (18 vuelos) · media 1.725 · 1498 s
+generación 17: mejor aptitud 1.776 · éxito 100 % · choques 0 · tiempo 13.5 s (18 vuelos) · media 1.681 · 1587 s
+generación 18: mejor aptitud 1.776 · éxito 100 % · choques 0 · tiempo 13.5 s (18 vuelos) · media 1.695 · 1676 s
+generación 19: mejor aptitud 1.776 · éxito 100 % · choques 0 · tiempo 13.5 s (18 vuelos) · media 1.726 · 1770 s
+generación 20: mejor aptitud 1.776 · éxito 100 % · choques 0 · tiempo 13.5 s (18 vuelos) · media 1.749 · 1860 s
+
+mejor: {"cp_acc": 0.95, "cp_margin": 0.323, "cp_react": 0.07, "sense": 1.129, "race": 0.801, "vs_k": 1.089, "acc_k": 1.076, "corridor": 0.504, "term": 0.988, "k_rep": 7.978, "radius": 6.28, "k_side": 0.809, "slow": 0.186, "stuck_t": 2.622, "k_tan": 0.826, "esc_t": 3.762, "look": 3.171}
+validación (semillas nuevas, 48 vuelos):
+  antes     aptitud 1.582 · éxito 92 % · choques 1 · tiempo 13.8 s (48 vuelos)
+  entrenado aptitud 1.687 · éxito 94 % · choques 0 · tiempo 14.3 s (48 vuelos)
+(1895 s)
+clasico/matrice    antes: aptitud 1.706, éxito 100 %, choques 0 · entrenado: aptitud 1.719, éxito 100 %, choques 0 → ADOPTADO
+clasico/mini       antes: aptitud 1.710, éxito 100 %, choques 0 · entrenado: aptitud 1.725, éxito 98 %, choques 0 → ADOPTADO
+clasico/px4        antes: aptitud 1.666, éxito 100 %, choques 0 · entrenado: aptitud 1.694, éxito 100 %, choques 0 → ADOPTADO
+hibrido/mini       antes: aptitud 1.582, éxito 92 %, choques 1 · entrenado: aptitud 1.687, éxito 94 %, choques 0 → ADOPTADO
+hibrido/px4        antes: aptitud 1.662, éxito 94 %, choques 0 · entrenado: aptitud 1.630, éxito 90 %, choques 0 → no mejora: se queda como estaba
+reactivo/matrice   antes: aptitud 1.094, éxito 65 %, choques 2 · entrenado: aptitud 0.813, éxito 69 %, choques 5 → no mejora: se queda como estaba
+reactivo/mini      antes: aptitud 1.364, éxito 75 %, choques 1 · entrenado: aptitud 1.364, éxito 75 %, choques 1 → no mejora: se queda como estaba
+reactivo/px4       antes: aptitud 1.441, éxito 77 %, choques 0 · entrenado: aptitud 1.466, éxito 81 %, choques 0 → ADOPTADO
+guardado en C:\Users\SERGIO\Desktop\Clones\Laya\dron-autonomo\dron\entrenados.json
+=== hibrido matrice (71 min desde el inicio)
+generación  1: mejor aptitud 1.669 · éxito 94 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.088 · 186 s
+generación  2: mejor aptitud 1.669 · éxito 94 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.057 · 344 s
+generación  3: mejor aptitud 1.669 · éxito 94 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.057 · 500 s
+generación  4: mejor aptitud 1.669 · éxito 94 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.051 · 657 s
+generación  5: mejor aptitud 1.669 · éxito 94 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.106 · 821 s
+generación  6: mejor aptitud 1.710 · éxito 100 % · choques 0 · tiempo 17.4 s (18 vuelos) · media 1.209 · 979 s
+generación  7: mejor aptitud 1.710 · éxito 100 % · choques 0 · tiempo 17.4 s (18 vuelos) · media 1.234 · 1140 s
+generación  8: mejor aptitud 1.710 · éxito 100 % · choques 0 · tiempo 17.4 s (18 vuelos) · media 1.312 · 1297 s
+generación  9: mejor aptitud 1.710 · éxito 100 % · choques 0 · tiempo 17.4 s (18 vuelos) · media 1.225 · 1451 s
+generación 10: mejor aptitud 1.714 · éxito 100 % · choques 0 · tiempo 17.1 s (18 vuelos) · media 1.180 · 1610 s
+generación 11: mejor aptitud 1.714 · éxito 100 % · choques 0 · tiempo 17.1 s (18 vuelos) · media 1.191 · 1771 s
+generación 12: mejor aptitud 1.717 · éxito 100 % · choques 0 · tiempo 17.0 s (18 vuelos) · media 1.141 · 1931 s
+generación 13: mejor aptitud 1.717 · éxito 100 % · choques 0 · tiempo 17.0 s (18 vuelos) · media 1.229 · 2082 s
+generación 14: mejor aptitud 1.717 · éxito 100 % · choques 0 · tiempo 17.0 s (18 vuelos) · media 1.192 · 2275 s
+generación 15: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.252 · 2431 s
+generación 16: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.335 · 2583 s
+generación 17: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.267 · 2971 s
+generación 18: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.239 · 3154 s
+generación 19: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.098 · 3333 s
+generación 20: mejor aptitud 1.727 · éxito 100 % · choques 0 · tiempo 16.4 s (18 vuelos) · media 1.296 · 3504 s
+
+mejor: {"cp_acc": 0.625, "cp_margin": 0.471, "cp_react": 0.238, "sense": 0.503, "race": 0.822, "vs_k": 1.768, "acc_k": 1.298, "corridor": 0.789, "term": 1.077, "k_rep": 5.081, "radius": 8.06, "k_side": 0.293, "slow": 0.073, "stuck_t": 2.987, "k_tan": 1.296, "esc_t": 9.38, "look": 3.613}
+validación (semillas nuevas, 48 vuelos):
+  antes     aptitud 1.168 · éxito 88 % · choques 4 · tiempo 17.6 s (48 vuelos)
+  entrenado aptitud 1.298 · éxito 88 % · choques 3 · tiempo 16.3 s (48 vuelos)
+(3551 s)
+clasico/matrice    fuera de los límites realistas (cp_react, vs_k): no se adopta
+clasico/mini       fuera de los límites realistas (vs_k): no se adopta
+clasico/px4        antes: aptitud 1.666, éxito 100 %, choques 0 · entrenado: aptitud 1.694, éxito 100 %, choques 0 → ADOPTADO
+hibrido/matrice    fuera de los límites realistas (vs_k): no se adopta
+hibrido/mini       fuera de los límites realistas (cp_react): no se adopta
+hibrido/px4        antes: aptitud 1.662, éxito 94 %, choques 0 · entrenado: aptitud 1.630, éxito 90 %, choques 0 → no mejora: se queda como estaba
+reactivo/matrice   antes: aptitud 1.094, éxito 65 %, choques 2 · entrenado: aptitud 0.813, éxito 69 %, choques 5 → no mejora: se queda como estaba
+reactivo/mini      antes: aptitud 1.364, éxito 75 %, choques 1 · entrenado: aptitud 1.364, éxito 75 %, choques 1 → no mejora: se queda como estaba
+reactivo/px4       antes: aptitud 1.441, éxito 77 %, choques 0 · entrenado: aptitud 1.466, éxito 81 %, choques 0 → ADOPTADO
+guardado en C:\Users\SERGIO\Desktop\Clones\Laya\dron-autonomo\dron\entrenados.json
+=== reactivo px4 (130 min desde el inicio)
+generación  1: mejor aptitud 1.492 · éxito 83 % · choques 0 · tiempo 20.9 s (18 vuelos) · media 1.286 · 187 s
+generación  2: mejor aptitud 1.508 · éxito 83 % · choques 0 · tiempo 20.1 s (18 vuelos) · media 1.339 · 340 s

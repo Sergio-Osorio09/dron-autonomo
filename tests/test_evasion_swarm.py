@@ -1,7 +1,9 @@
 """Fases 4 y 5: objetivo que huye y enjambre de drones."""
 import math
+import os
 
 import numpy as np
+import pytest
 
 from dron.sim import Simulation
 from dron.swarm import Swarm
@@ -33,6 +35,11 @@ def test_chase_an_evader_with_the_camera_only():
     assert s.mission.lost_count >= 1          # se escondió al menos una vez y lo volvió a encontrar
 
 
+# El enjambre (varios drones) queda para el futuro (26-09-2026): sus pruebas solo corren con DRON_SWARM=1
+enjambre = pytest.mark.skipif(os.environ.get("DRON_SWARM", "0") == "0", reason="enjambre aparcado (DRON_SWARM=1)")
+
+
+@enjambre
 def test_swarm_shares_the_search_and_splits_the_area():
     # (semilla 12: con la de antes, confirmando en vuelo y a 10 imágenes por segundo la encuentra a los 7 s,
     # antes de que los tres tengan su punto de búsqueda propio)
@@ -55,6 +62,7 @@ def test_swarm_shares_the_search_and_splits_the_area():
     assert sum(m.phase == "espera" for m in sw.missions) == 2
 
 
+@enjambre
 def test_team_pursuit_catches_what_one_drone_cannot():
     kw = dict(profile="px4", level="mixto", seed=1001, mode="carrera", motion="huye", terrain="colinas",
               wind_speed=4, gusts=1)

@@ -17,7 +17,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from dron.mission import MODES
-from dron.params import PROFILES
+from dron.params import PROFILES, TRAINING
+from dron.pilots import PILOTS
 from dron.sensors import NOISE_LEVELS, RAIN
 from dron.search import SEARCH_MODES
 from dron.sim import MAP_MODES, Simulation
@@ -44,12 +45,13 @@ class Session:
         self._recorded = False
 
     def reset(self, cfg):
-        drones = int(cfg.get("drones", 1) or 1)
+        # el enjambre queda para el futuro: un solo dron salvo con DRON_SWARM=1
+        drones = int(cfg.get("drones", 1) or 1) if os.environ.get("DRON_SWARM", "0") != "0" else 1
         search = cfg.get("search", "no")
         team = drones > 1 and (search != "no" or (cfg.get("motion") == "huye" and cfg.get("mode") == "carrera"))
         make = (lambda **kw: Swarm(drones, **kw)) if team else Simulation
         sim = make(
-            profile=cfg.get("profile", "px4"), level=cfg.get("level", "mixto"),
+            profile=cfg.get("profile", "x650"), payload=float(cfg.get("payload", 0) or 0), level=cfg.get("level", "mixto"),
             seed=int(cfg["seed"]) if str(cfg.get("seed", "")).strip() else None,
             wind_speed=float(cfg.get("wind_speed", 0)), wind_dir=float(cfg.get("wind_dir", 0)),
             gusts=int(cfg.get("gusts", 0)), noise=cfg.get("noise", "realista"),
@@ -58,7 +60,7 @@ class Session:
             terrain=cfg.get("terrain", "plano"), density=cfg.get("density", "normal"),
             goal_kind=cfg.get("goal_kind", "suelo"), mode=cfg.get("mode", "aterrizar"), rain=cfg.get("rain", "no"),
             motion=cfg.get("motion", "fija"), map_mode=cfg.get("map_mode", "desconocido"),
-            search=cfg.get("search", "no"))
+            search=cfg.get("search", "no"), pilot=cfg.get("pilot", "clasico"), ram=bool(cfg.get("ram", True)))
         with self.lock:
             self.gen += 1
             self.sim, self.frames, self.clock, self._recorded = sim, [], 0.0, False
@@ -130,12 +132,14 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(HERE, "ui", name), "rb") as f:
                 return self._send(200, f.read(), ctype)
         if self.path == "/api/options":
-            return self._send(200, {"profiles": {k: p.to_dict() for k, p in PROFILES.items()},
+            return self._send(200, {"profiles": {k: PROFILES[k].to_dict() for k in TRAINING},
                                     "levels": list(ALL_LEVELS), "noise": list(NOISE_LEVELS), "terrains": list(TERRAINS),
                                     "densities": list(DENSITIES), "goal_kinds": list(GOAL_KINDS),
                                     "modes": list(MODES), "rain": list(RAIN), "motions": list(MOTIONS),
                                     "map_modes": list(MAP_MODES), "searches": list(SEARCH_MODES),
-                                    "swarm_max": SWARM_MAX})
+                                    "swarm_max": SWARM_MAX,
+                                    "pilots": [{"key": k, "name": p.name, "description": p.description}
+                                               for k, p in PILOTS.items()]})
         self._send(404, {"error": "No encontrado"})
 
     def do_POST(self):

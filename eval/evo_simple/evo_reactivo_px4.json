@@ -1,0 +1,100 @@
+{
+  "pilot": "reactivo",
+  "profile": "px4",
+  "base": {
+    "cp_acc": 0.95,
+    "cp_margin": 0.362,
+    "cp_react": 0.124,
+    "sense": 1.615,
+    "race": 0.907,
+    "vs_k": 1.316,
+    "acc_k": 1.087,
+    "corridor": 0.754,
+    "term": 0.82,
+    "k_rep": 5.626,
+    "radius": 5.257,
+    "k_side": 0.846,
+    "slow": 0.441,
+    "stuck_t": 1.722,
+    "k_tan": 0.534,
+    "esc_t": 7.569
+  },
+  "best": {
+    "cp_acc": 0.95,
+    "cp_margin": 0.38,
+    "cp_react": 0.122,
+    "sense": 1.822,
+    "race": 0.858,
+    "vs_k": 1.316,
+    "acc_k": 1.011,
+    "corridor": 0.754,
+    "term": 0.87,
+    "k_rep": 5.626,
+    "radius": 7.515,
+    "k_side": 0.952,
+    "slow": 0.441,
+    "stuck_t": 1.691,
+    "k_tan": 0.534,
+    "esc_t": 6.658
+  },
+  "history": [
+    {
+      "gen": 1,
+      "best": {
+        "fit": 1.491838359270781,
+        "success": 0.8333333333333334,
+        "crash": 0,
+        "time": 20.91866666666715,
+        "n": 18
+      },
+      "mean": 1.2858907510363078,
+      "params": {
+        "cp_acc": 0.95,
+        "cp_margin": 0.388,
+        "cp_react": 0.154,
+        "sense": 1.615,
+        "race": 0.877,
+        "vs_k": 1.316,
+        "acc_k": 1.013,
+        "corridor": 0.754,
+        "term": 0.82,
+        "k_rep": 5.626,
+        "radius": 8.854,
+        "k_side": 0.833,
+        "slow": 0.441,
+        "stuck_t": 1.9,
+        "k_tan": 0.534,
+        "esc_t": 9.815
+      }
+    },
+    {
+      "gen": 2,
+      "best": {
+        "fit": 1.5079501366528554,
+        "success": 0.8333333333333334,
+        "crash": 0,
+        "time": 20.116000000000344,
+        "n": 18
+      },
+      "mean": 1.3390356131740337,
+      "params": {
+        "cp_acc": 0.95,
+        "cp_margin": 0.38,
+        "cp_react": 0.122,
+        "sense": 1.822,
+        "race": 0.858,
+        "vs_k": 1.316,
+        "acc_k": 1.011,
+        "corridor": 0.754,
+        "term": 0.87,
+        "k_rep": 5.626,
+        "radius": 7.515,
+        "k_side": 0.952,
+        "slow": 0.441,
+        "stuck_t": 1.691,
+        "k_tan": 0.534,
+        "esc_t": 6.658
+      }
+    }
+  ]
+}

@@ -1,0 +1,404 @@
+{
+  "pilot": "reactivo",
+  "profile": "mini",
+  "base": {
+    "cp_acc": 0.9,
+    "cp_margin": 0.41,
+    "cp_react": 0.1,
+    "sense": 1.15,
+    "race": 0.9,
+    "vs_k": 1.0,
+    "acc_k": 1.0,
+    "corridor": 0.6,
+    "term": 0.7,
+    "k_rep": 6.0,
+    "radius": 6.0,
+    "k_side": 0.6,
+    "slow": 0.35,
+    "stuck_t": 2.5,
+    "k_tan": 0.8,
+    "esc_t": 6.0
+  },
+  "best": {
+    "cp_acc": 0.9,
+    "cp_margin": 0.41,
+    "cp_react": 0.1,
+    "sense": 1.15,
+    "race": 0.9,
+    "vs_k": 1.0,
+    "acc_k": 1.0,
+    "corridor": 0.6,
+    "term": 0.7,
+    "k_rep": 6.0,
+    "radius": 6.0,
+    "k_side": 0.6,
+    "slow": 0.35,
+    "stuck_t": 2.5,
+    "k_tan": 0.8,
+    "esc_t": 6.0
+  },
+  "history": [
+    {
+      "gen": 1,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.419399889914801,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 2,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.5153056151254156,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 3,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.5323082788532085,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 4,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.456396872046165,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 5,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.5453863549925162,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 6,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.517622957072003,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 7,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.5494120608599555,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 8,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.584585319695055,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 9,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.521409469045397,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 10,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.6146530140459001,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 11,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.585852400213124,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    },
+    {
+      "gen": 12,
+      "best": {
+        "fit": 1.624167255929935,
+        "success": 0.9166666666666666,
+        "crash": 0,
+        "time": 18.172727272727638,
+        "n": 12
+      },
+      "mean": 1.4946548794208512,
+      "params": {
+        "cp_acc": 0.9,
+        "cp_margin": 0.41,
+        "cp_react": 0.1,
+        "sense": 1.15,
+        "race": 0.9,
+        "vs_k": 1.0,
+        "acc_k": 1.0,
+        "corridor": 0.6,
+        "term": 0.7,
+        "k_rep": 6.0,
+        "radius": 6.0,
+        "k_side": 0.6,
+        "slow": 0.35,
+        "stuck_t": 2.5,
+        "k_tan": 0.8,
+        "esc_t": 6.0
+      }
+    }
+  ],
+  "valid_base": {
+    "fit": 1.3641320347591912,
+    "success": 0.75,
+    "crash": 1,
+    "time": 17.7620833333336,
+    "n": 48
+  },
+  "valid_best": {
+    "fit": 1.3641320347591912,
+    "success": 0.75,
+    "crash": 1,
+    "time": 17.7620833333336,
+    "n": 48
+  }
+}

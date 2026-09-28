@@ -85,13 +85,15 @@ def depth_down_dirs(yaw: float) -> np.ndarray:
     return D / np.linalg.norm(D, axis=1, keepdims=True)
 
 
-def clearance_below(depth: Dict, radius: float, ahead=(0.0, 0.0)) -> float:
+def clearance_below(depth: Dict, radius: float, ahead=(0.0, 0.0), only_below: float = None) -> float:
     """Distancia vertical a lo más alto que hay bajo el dron, medida con la cámara inferior: dentro de un círculo de
     `radius` m alrededor de su vertical y a lo largo del tramo hasta donde estará en breve (`ahead`, en el plano).
     Así ve la copa de un árbol que tiene debajo y un poco por delante. Infinito si no ve nada."""
     d, D = depth["dist"], depth["dirs"]
     ok = np.isfinite(d) & (d < depth["max"] - 1e-3)
     rel = D[ok] * d[ok, None]
+    if only_below is not None:   # (con la cámara frontal) solo lo que está por debajo: lo de delante, los sectores
+        rel = rel[rel[:, 2] < -only_below]
     a = np.asarray(ahead, float)
     L2 = float(a @ a)
     s = np.clip((rel[:, :2] @ a) / L2, 0.0, 1.0) if L2 > 1e-9 else np.zeros(len(rel))
@@ -103,17 +105,26 @@ def clearance_below(depth: Dict, radius: float, ahead=(0.0, 0.0)) -> float:
 SECTORS = 72  # OBSTACLE_DISTANCE de MAVLink / Collision Prevention de PX4: 72 sectores de 5°
 
 
-def depth_sectors(depth: Dict, band: float, band_down: float = None) -> List[Dict]:
+def depth_sectors(depth: Dict, band: float, band_down: float = None, ground: float = None,
+                  slope: float = 0.0) -> List[Dict]:
     """Comprime la imagen de profundidad en sectores horizontales, como hace el ordenador de a bordo para la
     Collision Prevention de PX4 (mensaje OBSTACLE_DISTANCE): en cada sector de 5°, la distancia horizontal a lo más
     cercano dentro de una franja vertical de ±`band` m alrededor del dron (lo de más abajo es el suelo; hacia abajo
     la franja llega a `band_down` si se da: al bajar, lo que tiene delante y debajo también cuenta).
+    `slope` (bajando en diagonal): la franja baja además `slope` m por cada metro de distancia horizontal, lo que
+    el dron habrá bajado al llegar ahí (su senda de planeo).
     Usa la medida RELATIVA de la cámara (dirección × distancia): no depende del GPS."""
     d, D = depth["dist"], depth["dirs"]
     ok = np.isfinite(d) & (d < depth["max"] - 1e-3)
     rel = D[ok] * d[ok, None]
     lo = band if band_down is None else band_down
-    rel = rel[(rel[:, 2] <= band) & (rel[:, 2] >= -lo)]
+    rel = rel[(rel[:, 2] <= band) & (rel[:, 2] >= -lo - slope * np.hypot(rel[:, 0], rel[:, 1]))]
+    if ground is not None:
+        # el suelo no es un obstáculo: lo que está a la altura del suelo que mide el telémetro inferior (`ground` m
+        # por debajo) se descarta. Bajando hacia la meta de una carrera a 1,5 m de altura, el suelo de delante entraba
+        # en la franja y Collision Prevention frenaba el dron de 9 a 2 m/s justo antes de cruzarla. Una ladera o un
+        # obstáculo delante (más altos que el suelo de debajo) siguen contando
+        rel = rel[rel[:, 2] > -(ground - 0.3)]
     if not len(rel):
         return []
     hd = np.hypot(rel[:, 0], rel[:, 1])

@@ -1,0 +1,50 @@
+{
+  "px4": {
+    "genes": {
+      "att_k": 1.53,
+      "rate_pk": 1.296,
+      "rate_ik": 0.614,
+      "rate_dk": 2.291,
+      "xy_p_k": 1.439,
+      "vel_p_k": 2.0
+    },
+    "coste_fabrica": 10.487115349789594,
+    "coste_autotune": 3.908523657496644
+  },
+  "mini": {
+    "genes": {
+      "att_k": 1.45,
+      "rate_pk": 1.366,
+      "rate_ik": 0.333,
+      "rate_dk": 3.0,
+      "xy_p_k": 1.401,
+      "vel_p_k": 2.0
+    },
+    "coste_fabrica": 10.917729027987848,
+    "coste_autotune": 3.946467584291795
+  },
+  "matrice": {
+    "genes": {
+      "att_k": 1.457,
+      "rate_pk": 1.001,
+      "rate_ik": 0.314,
+      "rate_dk": 2.683,
+      "xy_p_k": 1.268,
+      "vel_p_k": 1.999
+    },
+    "coste_fabrica": 11.191689529731669,
+    "coste_autotune": 4.087205548242797
+  },
+  "x650": {
+    "genes": {
+      "att_k": 1.541,
+      "rate_pk": 1.362,
+      "rate_ik": 0.361,
+      "rate_dk": 2.388,
+      "xy_p_k": 1.433,
+      "vel_p_k": 2.0
+    },
+    "coste_fabrica": 10.489093533426242,
+    "coste_autotune": 3.8998581056261066
+  }
+}

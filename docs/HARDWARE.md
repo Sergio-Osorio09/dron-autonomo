@@ -25,22 +25,34 @@ de a bordo en 2026.
 | GNSS | ±1-2 m (M10) | el filtro baja el error a ~1 m; RTK (±0,1 m) solo si hace falta precisión de centímetros |
 | Enlace de datos entre drones | ~10 Hz, < 100 m | el enjambre comparte posición, punto elegido y avistamientos |
 
-## Lista de piezas (un dron, ~1,5-1,9 kg: del tipo "genérico PX4" del simulador)
+## EL DRON DE ENTRENAMIENTO: Holybro X650 (26-09-2026)
 
-| Pieza | Modelo barato | Precio aprox. | En el simulador |
+Se entrena un solo dron, práctico, que se arma por piezas y lleva carga: el **Holybro X650** (perfil `x650`), el kit
+de desarrollo de referencia de PX4. Datos de Holybro: 650 mm entre ejes, 2,0 kg sin batería, despegue máximo 6,3 kg,
+motores T-Motor MN4014 330KV, hélices de 15", ESC 45 A, 6S, 30 min en estacionario (10000 mAh, sin carga).
+
+**Carga útil real:** Holybro anuncia 4,3 kg sin batería, pero con la batería de 10000 mAh (1,2 kg) y la electrónica
+de autonomía de abajo (~0,45 kg) el dron pesa ~3,65 kg: caben **~2,6 kg** hasta los 6,3 kg (≈3 kg con la batería de
+5200 mAh). Para volar con soltura (empuje/peso ≈ 2), 1-1,5 kg. 4 kg con margen piden un chasis mayor (p. ej. Tarot X4
+de 960 mm, hasta 8 kg al despegue). En el simulador: `Simulation(payload=kg)` y el selector "Carga" de la interfaz.
+
+| Pieza | Modelo | Precio aprox. | En el simulador |
 |---|---|---|---|
-| Chasis + motores + ESC + hélices | Holybro X500 V2 ARF (fibra de carbono, 2216 KV920, ESC 20 A, hélices 10") | 259 $ | física (`params.py`, perfil `px4`) |
+| Chasis + motores + ESC + hélices | Holybro X650 ARF (fibra de carbono, MN4014 330KV, Tekko32 45 A, Gemfan 1555, placa de distribución) · o solo el chasis (249 $) y el resto por piezas | 899 $ | física (`params.py`, perfil `x650`) |
+| Batería | LiPo 6S 10000 mAh (XT60) | ~150-200 $ (ESTIMADO) | batería (`battery_wh` 222 Wh) |
 | Controladora de vuelo | Holybro Pixhawk 6C Mini (PX4) | 131 $ | EKF2, control PX4, Collision Prevention, geovalla |
 | GNSS + brújula | Holybro M10 GPS | ~45 $ | GPS con ruido y deriva |
 | Telémetro inferior | Benewake TF-Luna (0,2-8 m) | 20-25 $ | rayo inferior (altura sobre el suelo, aterrizaje) |
 | LiDAR 360° | Slamtec RPLIDAR C1 (12 m, 5000 muestras/s, 10 Hz) | ~80 $ | el anillo de 36 telémetros (PX4 lo usa como OBSTACLE_DISTANCE) |
 | Cámara de profundidad + detección | Luxonis OAK-D Lite (estéreo + color 4K + red neuronal a bordo) | 269 $ | cámara de profundidad frontal y cámara de detección (el detector corre en la propia cámara) |
 | Ordenador de a bordo | Raspberry Pi 5 4 GB | ~65-110 $ | mapa, ESDF, planificación, búsqueda, misión |
-| Batería | LiPo 4S 5000 mAh | ~50-70 $ | batería (`battery_wh`) |
 | Radio de control + receptor | ExpressLRS (p. ej. emisora de gama baja + receptor ELRS) | ~80-100 $ | seguridad: piloto humano que puede tomar el control |
 | Radio de telemetría | SiK 433/915 MHz o la propia ELRS con MAVLink | ~30 $ | enlace con la estación de tierra |
 | Varios | regulador 5 V/5 A para la Pi, cables, soportes impresos en 3D | ~30 $ | — |
-| **Total** | | **~1000-1100 $** | |
+| **Total** | | **~1900-2000 $** | |
+
+(La lista anterior, de ~1000-1100 $, usaba el Holybro X500 V2 ARF, 259 $, con batería 4S de 5000 mAh: el perfil `px4`
+del simulador. Más barato, pero con ~0,5-1 kg de carga útil.)
 
 Para la visión inferior (fase 2) y el aterrizaje de precisión se puede añadir una cámara barata mirando hacia abajo
 con marcadores AprilTag en la plataforma (PX4 acepta LANDING_TARGET desde el ordenador de a bordo) en lugar de un
@@ -64,6 +76,9 @@ compartidas; cada dron necesita su enlace de datos).
 
 ## Fuentes de los precios
 
+- [Holybro X650: especificaciones oficiales](https://docs.holybro.com/drone-development-kit/x650-development-kit/overview)
+- [Holybro X650 Kits (precios)](https://holybro.com/products/x650-kits)
+- [T-Motor MN4014 330KV](https://store.tmotor.com/product/mn4014-kv330-motor-navigator-type.html)
 - [Holybro X500 V2 Kits](https://holybro.com/products/x500-v2-kits)
 - [Holybro Pixhawk 6C Mini](https://holybro.com/products/pixhawk-6c-mini)
 - [Holybro M10 GPS](https://holybro.com/products/m10-gps)

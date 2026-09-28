@@ -63,8 +63,10 @@ import math
 
 import numpy as np
 
-from . import tuning
-from .planning import plan, segment_clear
+from . import pilots, tuning
+from .control import collision_prevention
+from .params import G
+from .planning import plan, segment_clear, straight
 from .search import CONFIRM_AGL, SEARCH_AGL, in_cone, p_detect
 from .target import TargetTracker, intercept_point
 from .world import LENGTH, WIDTH
@@ -72,6 +74,10 @@ from .world import LENGTH, WIDTH
 CRUISE_AGL = 2.5
 PAD_RADIUS = 0.75
 GATE_RADIUS = 1.0
+# (PROBADO Y DESACTIVADO, clásico en el X650, 60 semillas por caso: objetivo rápido −3,5 %, pero meta quieta +1 %;
+# con otros umbrales, ±1 %. DRON_PROGRESS=1: con ella)
+PROGRESS = __import__("os").environ.get("DRON_PROGRESS", "0") != "0"   # variable de progreso (ver reference)
+PROGRESS_E0, PROGRESS_E1, PROGRESS_MIN = (float(x) for x in __import__("os").environ.get("DRON_PROGRESS_E", "0.8,2.0,0.2").split(","))   # m por delante sin frenar el reloj, m hasta el mínimo, mínimo
 STITCH = 0.5   # s de la trayectoria actual que se conservan al replanificar (0 = sin coser)
 MODES = ("aterrizar", "carrera")
 # carrera "a por todas": confirmar la detección en vuelo y perseguir sin frenar al acercarse (DRON_ALL_OUT=0 vuelve a
@@ -79,14 +85,48 @@ MODES = ("aterrizar", "carrera")
 ALL_OUT = __import__("os").environ.get("DRON_ALL_OUT", "1") != "0"
 # sprint de carrera a la velocidad máxima del fabricante al ver la meta (DRON_SPRINT=0 lo desactiva, para comparar)
 SPRINT = __import__("os").environ.get("DRON_SPRINT", "1") != "0"
+# persecución: velocidad de cierre √(K·a·d). K = 1, 2 o 4 no cambian nada medible (40 semillas: objetivo rápido
+# 15,6-15,7 s; el que huye 37-39/40): lo que manda es la geometría de la intercepción. Se deja el más agresivo de
+# los que no empeoran (en carrera, llegar es lo que cuenta: impactar también vale)
+PURSUIT_K = float(__import__("os").environ.get("DRON_PURSUIT_K", 2.0))
+CARROT = float(__import__("os").environ.get("DRON_CARROT", 3.0))   # persecución: consigna de posición a ≤ CARROT m
+RACE_DIVE = 2.0
+JERK_RACE = float(__import__("os").environ.get("DRON_JERK_RACE", 8.0))   # MPC_JERK_MAX de PX4 (carrera)
+# VENTANA DINÁMICA (Dynamic Window Approach, Fox, Burgard y Thrun 1997) en el planificador local del híbrido: en
+# vez de pedir una velocidad y que Collision Prevention la recorte después (se "peleaban"), a cada lectura de los
+# telémetros (20 Hz) prueba DWA_N direcciones a ±DWA_SPAN° de la que quiere, les aplica la MISMA Collision Prevention
+# que el control y se queda con la que más le acerca a su punto de mira (menos una pequeña penalización por girar).
+# PROBADO Y DESACTIVADO (X650, híbrido, 60 semillas por caso): la anticolisión deja de recortar (71 → 21 % del tiempo)
+# pero no acelera (11,2 vs 11,3 s en el mixto; 14,8 = 14,8 en el bosque) y en la ciudad 1 choque en 120. DRON_DWA=1: con ella
+DWA = __import__("os").environ.get("DRON_DWA", "0") != "0"
+DWA_SPAN, DWA_N, DWA_TURN = 60.0, 9, 0.15
+REACT_RAMP = float(__import__("os").environ.get("DRON_REACT_RAMP", 0.0))   # rampa del reactivo (× aceleración)
+PN_N = float(__import__("os").environ.get("DRON_PN", 3.0))   # constante de la navegación proporcional (0 = sin ella)   # carrera: factor sobre la velocidad de bajada del fabricante al picar en diagonal hacia la meta
 TERMINAL = __import__("os").environ.get("DRON_TERMINAL", "1") != "0"   # guía terminal hacia la puerta
+# EMBESTIDA (carrera, meta a la vista y pasillo libre): el dron deja de volar "como un dron de fábrica" y usa todo el
+# empuje de sus 4 motores para ir directo a la meta, muy inclinado, como un FPV de carreras o un interceptor. En un dron
+# real hay que desbloquear la inclinación (PX4: MPC_TILT_MAX_AIR admite hasta 85°) y la velocidad (MPC_XY_VEL_MAX); los
+# DJI no lo permiten con su firmware. DRON_RAM=0: sin embestida
+RAM = __import__("os").environ.get("DRON_RAM", "1") != "0"
+# Inclinación en la embestida: la mayor que aún sostiene el peso con un 10 % de reserva, acos(1,1/TWR) (≈ 55-60°).
+# Se probó con 80° (el máximo de MPC_TILT_MAX_AIR es 85°): con las hélices casi apuntando a la meta el empuje
+# vertical es cos 80° ≈ 0,17 del total y el dron CAE; a 2 m del suelo no le daba tiempo a enderezarse (Matrice:
+# 5 choques en 30 carreras, 4 contra el suelo)
+RAM_RESERVE = float(__import__("os").environ.get("DRON_RAM_RESERVE", 1.1))
+# velocidad máxima en la embestida: la que da el empuje a esa inclinación contra el arrastre, sin pasar de 1,5 veces
+# la del fabricante (ESTIMADO, de drones con modo manual desbloqueado: DJI Avata 2 16 → 27 m/s, DJI FPV 27 → 39 m/s;
+# a más velocidad las hélices pierden empuje y el modelo de arrastre deja de valer)
+RAM_V_K = 1.5
+# y solo con el pasillo hasta la meta libre con tuning "ram_clear" m más de holgura por lado (por dron: a más velocidad,
+# cualquier desvío lateral, la inercia de un giro, se come antes el margen; ver tuning.py). DRON_RAM_CLEAR lo fuerza
+RAM_CLEAR = __import__("os").environ.get("DRON_RAM_CLEAR")
 # aterrizando: confirmar la detección en vuelo, sin bajar a mirarla (DRON_CONFIRM_IN_FLIGHT=0: como antes)
 CONFIRM_IN_FLIGHT = __import__("os").environ.get("DRON_CONFIRM_IN_FLIGHT", "1") != "0"
 
 
 class Mission:
     def __init__(self, world, grid, prof, precision: bool = True, mode: str = "aterrizar", sensor_range: float = None,
-                 mapper=None, searcher=None):
+                 mapper=None, searcher=None, pilot: str = "clasico", ram: bool = True):
         if mode not in MODES:
             raise ValueError("Modo de misión desconocido %r" % mode)
         self.world, self.grid, self.prof, self.precision, self.mode = world, grid, prof, precision, mode
@@ -103,6 +143,7 @@ class Mission:
         self.vel_now = np.zeros(3)
         self.los_t, self.los_clear = -1.0, False
         self.sprint, self.sprint_t, self.sprint_dist = False, -1.0, 0.0   # a velocidad máxima: ve la meta
+        self.ram, self.ram_clear = False, False                           # embestida (ver RAM)
         self.pad_est = self.pad.copy()
         self.traj = None
         self.t0 = 0.0
@@ -129,6 +170,8 @@ class Mission:
         self.refine_t = -1.0
         self.dash_agl = 0.0                  # altura sobre la detección al salir hacia ella
         self.same_goal = 0                   # veces seguidas que la búsqueda propone el sitio donde ya está
+        self.retry_t = -1.0                  # carrera: última vez que replanificó tras pasar la meta de largo
+        self.pursuit_t, self.pursuit_v = -1.0, None   # persecución: última velocidad pedida (para suavizarla)
         self.dash_hits = []                  # (posición detectada, peso 1/σ²): las de cerca pesan más
         self.gate_hits, self.gate_fix_t = [], -1.0   # carrera: la puerta vista con la cámara (posición relativa)
         self.heading = 0.0
@@ -136,26 +179,49 @@ class Mission:
             self.pad_est = self.pad_z_est = self.gate_est = None
         # fase 4: objetivo que huye (sin rastreador GNSS: solo lo que ve la cámara)
         self.evader = self.moving and world.motion.kind == "huye"
+        # sin rastreador: el que huye y, con búsqueda, cualquier objetivo en movimiento. No emite su posición: solo
+        # se sabe dónde está cuando la cámara lo ve (antes, con búsqueda y objetivo en movimiento, la simulación
+        # quitaba la búsqueda y el dron sabía dónde estaba desde el despegue)
+        self.camera_only = self.evader or (self.moving and searcher is not None)
         self.last_seen_t, self.lost_count = 0.0, 0
         self.make_searcher = None            # la simulación da cómo crear la búsqueda (con el mapa del dron)
         self.id, self.team, self.search_agl, self.visible_fn = 0, None, 0.0, None   # enjambre (fase 5)
         self.last_meas = None
-        if self.evader:                      # sabe dónde está al empezar (la última posición conocida)
+        if self.evader and searcher is None:   # sabe dónde está al empezar (la última posición conocida)
             self.tracker.update(0.0, np.array(world.goal[:2]))
             self.target_z = world.goal[2]
         # no volar más rápido de lo que dejan ver los sensores: poder frenar dentro del alcance de los telémetros
         rng = sensor_range or prof.sensor_range
         self.range = rng
-        self.P = tuning.params(prof.key)     # parámetros de seguridad y velocidad de este dron (tuning.py)
+        # el algoritmo que pilota (pilots.py) y sus parámetros de seguridad y velocidad (tuning.py)
+        self.pilot = pilots.get(pilot)
+        self.P = tuning.params(prof.key, tuned=self.pilot.tuned)
+        self.all_out = ALL_OUT and self.pilot.all_out
+        # (no contra el que huye: esquiva, y lanzarse sin frenar junto a obstáculos le costaba choques al Matrice:
+        # 30 persecuciones, 2 → 5 choques, sin capturarlo antes)
+        self.ram_on = RAM and ram and self.all_out and mode == "carrera" and not self.evader
+        self.sprint_on = SPRINT and self.pilot.sprint
+        self.terminal_on = TERMINAL and self.pilot.terminal
+        self.confirm_in_flight = CONFIRM_IN_FLIGHT and self.pilot.confirm_in_flight
+        self.reactive = self.pilot.planner in ("reactivo", "hibrido")
+        self.guided = self.pilot.planner == "hibrido"          # reactivo con guía global (A* cada segundo)
+        self.guide, self.guide_t = None, -1.0
+        self.gains = dict(self.pilot.gains)
+        self.P.update(pilots.RACE_DEFAULTS)
+        if mode == "carrera":            # entrenados para la carrera (eval/evolve.py): márgenes, velocidad, ganancias
+            for k, val in pilots.race_params(self.pilot, prof.key).items():
+                (self.gains if k in self.gains else self.P)[k] = val
+        self.react_best, self.react_t, self.stuck_until, self.stuck_side = math.inf, 0.0, -1.0, 1.0
+        self.esc_start, self.react_arrived = -1.0, False
         # (Se probó a planificar con el límite más prudente de Collision Prevention, control.cp_speed_limit: bajan
         # algo las replanificaciones, 5,9 → 5,1 por vuelo, pero sube el tiempo 1-2 s y no mejora el éxito. Descartado.)
-        self.v_sense = math.sqrt(2 * prof.acc_hor * max(rng - prof.radius - self.P["sense"], 1.0))
+        self.v_sense = math.sqrt(2 * prof.acc_hor * max(rng - prof.radius - self.P["sense"], 1.0)) * self.P["vs_k"]
 
     def _track(self, t):
         """Posición y velocidad predichas del objetivo en t. Al que huye no se le extrapola más de 1,5 s desde la
         última vez que se le vio: si no, el filtro lo "movía" sin fin en línea recta y el dron perseguía un fantasma
         (sin llegar nunca lo bastante cerca como para darlo por perdido y buscarlo)."""
-        if self.evader:
+        if self.camera_only:
             t = min(t, self.last_seen_t + 1.5)
         return self.tracker.state_at(t)
 
@@ -170,23 +236,43 @@ class Mission:
                          - self.world.terrain.height(*self.world.goal[:2]) + 1.0])
 
     def _race_v(self):
-        """Velocidad de carrera: la máxima del fabricante si ve la meta (sprint); si no, el 90 % sin pasar de la que
-        permite frenar dentro del alcance de los sensores."""
-        return self.prof.v_max if self.sprint else min(0.9 * self.prof.v_max, self.v_sense)
+        """Velocidad de carrera: la máxima del fabricante si ve la meta (sprint), más en la embestida; si no, el 90 %
+        sin pasar de la que permite frenar dentro del alcance de los sensores."""
+        if self.ram:
+            return self.ram_speed()
+        return self.prof.v_max if self.sprint else min(self.P["race"] * self.prof.v_max, self.v_sense)
+
+    def ram_tilt(self) -> float:
+        """Inclinación máxima en la embestida (rad): la que sostiene el peso con reserva, acos(RAM_RESERVE/TWR)."""
+        return max(math.acos(min(RAM_RESERVE / max(self.prof.twr, 1.01), 1.0)), self.prof.tilt_max)
+
+    def ram_speed(self) -> float:
+        """Velocidad máxima en la embestida. El arrastre del modelo (params.drag) sale de v_max a la inclinación
+        máxima del fabricante; a la inclinación de la embestida (ram_tilt), la velocidad en la que el arrastre iguala
+        el empuje horizontal es v_max·√(tan θ / tan θ_fábrica). Con el tope RAM_V_K."""
+        p = self.prof
+        th = self.ram_tilt()
+        v = p.v_max * math.sqrt(max(math.tan(th), math.tan(p.tilt_max)) / math.tan(p.tilt_max))
+        return min(v, RAM_V_K * p.v_max)
+
+    def ram_acc(self) -> float:
+        """Aceleración horizontal en la embestida: g·tan(ram_tilt), sosteniendo la altura."""
+        return G * math.tan(self.ram_tilt())
 
     def _sprint_check(self, t, est_p) -> bool:
         """¿Ve la meta? Línea de visión libre hasta la puerta con la holgura del planificador y, con mapa
         desconocido, todo el pasillo ya observado (no basta con "desconocido = libre"). Al que huye, además, tiene que
         haberlo visto hace menos de 0,5 s; con búsqueda, solo tras detectar la meta."""
-        if self.mode != "carrera" or not SPRINT or self.phase not in ("carrera", "persecución", "reintento"):
+        if self.mode != "carrera" or not self.sprint_on or self.phase not in ("carrera", "persecución", "reintento"):
             return False
         gate = self.gate_at(t) if self.moving else self.gate_est
-        if gate is None or (self.evader and t - self.last_seen_t > 0.5):
+        if gate is None or (self.camera_only and t - self.last_seen_t > 0.5):
             return False
         d = gate - est_p
         n = float(np.linalg.norm(d))
         if n < 1.5:
             self.sprint_dist = n
+            self.ram_clear = True
             return True
         u = d / n
         a = est_p + u * min(1.0, 0.3 * n)
@@ -199,7 +285,150 @@ class Mission:
             if not self.map.seen[idx[:, 0], idx[:, 1], idx[:, 2]].all():
                 return False
         self.sprint_dist = n
+        self.ram_clear = self.ram_on and segment_clear(self._space()[0], a, b,
+                                                       self.prof.radius + self.P["margin"]
+                                                       + (float(RAM_CLEAR) if RAM_CLEAR else self.P["ram_clear"]), 0.3)
         return True
+
+    def _planner(self, *args, **kw):
+        """`planning.plan` o, con el piloto reactivo, una recta hasta la meta (sin coser: con `prefix`, None)."""
+        if not self.reactive:
+            return plan(*args, **kw)
+        a = list(args) + [None] * 10
+        prefix = a[9] if a[9] is not None else kw.get("prefix")
+        if prefix is not None:
+            return None
+        start, goal, v, end = a[3], a[4], a[5], a[6] or 0.0
+        start_speed = a[8] if a[8] is not None else kw.get("start_speed", 0.0)
+        self.react_best, self.react_t, self.react_arrived = math.inf, -1.0, False
+        return straight(a[2], start, goal, v or self.prof.v_cruise, end, start_speed)
+
+    def _guide_point(self, t, est_p, goal, look):
+        """(híbrido) Punto `look` metros por delante en un camino A* hasta `goal` sobre el mapa (el aprendido con mapa
+        desconocido; lo desconocido es libre), recalculado cada segundo (~15-35 ms). None si no hay camino."""
+        from .planning import astar
+        if t - self.guide_t > 1.0:
+            self.guide_t = t
+            grid = self._space()[1]
+            cells = astar(grid, est_p, goal, self.prof.radius + self.P["margin"])
+            self.guide = None if cells is None else np.array([grid.center(c) for c in cells] + [goal])
+        if self.guide is None or len(self.guide) < 2:
+            return None
+        dd = np.linalg.norm(self.guide - est_p, axis=1)
+        i = int(np.argmin(dd))                                 # dónde está sobre el camino
+        ahead = np.nonzero(dd[i:] >= look)[0]
+        return self.guide[i + ahead[0]] if len(ahead) else self.guide[-1]
+
+    def _reactive(self, t, est_p, est_v, readings):
+        """PILOTO REACTIVO (campos de potencial, Khatib 1986): velocidad = atracción hacia el final de la recta +
+        repulsión de cada obstáculo que ven los telémetros a menos de R (∝ 1/d − 1/R), más lento con algo delante.
+        Atascado (no se acerca en `stuck_t` s: mínimo local), rodea por el lado más libre durante 3 s, como los
+        algoritmos Bug. Llega cuando está a menos de 1 m (o lo cruza, en carrera): la misión sigue como al terminar
+        una trayectoria."""
+        G = self.gains
+        # las ÚLTIMAS lecturas de los telémetros (miden a 20 Hz y el piloto decide a 200 Hz). Antes solo se usaban en
+        # el paso en que llegaban: en 9 de cada 10 decisiones no había repulsión ni "algo delante" y el dron iba recto
+        # hacia la meta; Collision Prevention le recortaba la velocidad pedida el 65 % del tiempo (X650)
+        if "rays" in readings or not hasattr(self, "_rays"):
+            self._rays = readings.get("rays", [])
+        all_rays = self._rays
+        goal = self.traj.P[-1]
+        d = goal - est_p
+        dist = float(np.linalg.norm(d))
+        zero = np.zeros(3)
+        if dist < 1.0 or (self.traj.end_speed > 0 and dist < 2.5 and float(d @ est_v) < 0):
+            self.react_arrived = True                          # llegada: la misión pasa a lo siguiente
+            return goal.copy(), zero, zero
+        u = d / dist
+        if self.guided:        # híbrido: hacia el punto de mira del camino A* (si lo hay), no en línea recta
+            aim = self._guide_point(t, est_p, goal, G["look"])
+            if aim is not None:
+                da = aim - est_p
+                na = float(np.linalg.norm(da))
+                if na > 0.3:
+                    u = da / na
+        acc = self.prof.acc_hor
+        spd = min(self.traj.v_cruise, math.sqrt(self.traj.end_speed ** 2 + 2 * 0.7 * acc * dist))
+        rays = [r for r in all_rays if abs(r["dir"][2]) < 0.5 and r["dist"] < G["radius"]]
+        rep = np.zeros(3)
+        front = math.inf
+        for r in rays:
+            q = np.asarray(r["dir"], float)
+            dd = max(float(r["dist"]) - self.prof.radius, 0.2)
+            ahead = float(q @ u)
+            w = 1.0 if ahead > 0 else G["k_side"]
+            rep -= q * w * G["k_rep"] * (1.0 / dd - 1.0 / G["radius"])
+            if ahead > 0.7:
+                front = min(front, dd)
+        # los bordes de la arena (la geovalla) también repelen, con el margen del planificador (que crece con la
+        # incertidumbre del GPS): los telémetros no los ven y, empujado por los edificios, el dron se pegaba a ellos
+        # y con el error del GPS acababa fuera (2 choques de 40 en la ciudad)
+        for dist_b, away in ((est_p[0], (1, 0)), (LENGTH - est_p[0], (-1, 0)), (est_p[1], (0, 1)),
+                             (WIDTH - est_p[1], (0, -1))):
+            dd = max(dist_b - self.prof.radius - self.margin, 0.2)
+            if dd < G["radius"]:
+                rep += np.array([away[0], away[1], 0.0]) * G["k_rep"] * (1.0 / dd - 1.0 / G["radius"])
+        n = float(np.linalg.norm(rep))
+        if n > 1.5 * spd:
+            rep *= 1.5 * spd / n
+        if front < G["radius"]:
+            spd *= max(0.2, 1.0 - G["slow"] * (1.0 - front / G["radius"]) * 2.0)
+        # atasco (mínimo local): no mejora su mejor distancia en stuck_t segundos
+        if dist < self.react_best - 0.5:
+            self.react_best, self.react_t = dist, t
+        elif self.react_t < 0:
+            self.react_t = t
+        elif t - self.react_t > G["stuck_t"] and t > self.stuck_until:
+            # atascado: rodea el obstáculo (por el lado más libre, siempre el mismo) hasta ver libre la dirección de
+            # la meta o hasta esc_t segundos, como el algoritmo Bug2 (seguir el borde del obstáculo)
+            self.stuck_until, self.react_t, self.esc_start = t + G["esc_t"], t, t
+            side = [float(np.cross(u, r["dir"])[2]) for r in all_rays]
+            left = sum(r["dist"] for r, c in zip(all_rays, side) if c > 0.3)
+            right = sum(r["dist"] for r, c in zip(all_rays, side) if c < -0.3)
+            self.stuck_side = 1.0 if left >= right else -1.0
+        if t < self.stuck_until and t - self.esc_start > 1.0 and front >= G["radius"]:
+            self.stuck_until = t                               # ya ve libre la dirección de la meta
+        v = u * spd + rep
+        if t < self.stuck_until:                               # rodear: perpendicular a la meta, hacia lo más libre
+            v = u * spd * 0.3 + rep + self.stuck_side * np.array([-u[1], u[0], 0.0]) * G["k_tan"] * self.traj.v_cruise
+        elif DWA and self.guided:
+            v = self._dwa(v, u, est_v, all_rays, "rays" in readings)
+        if REACT_RAMP:
+            # velocidad pedida en RAMPA (como la persecución y el generador de consignas de PX4): cambia como mucho a
+            # la aceleración del planificador; el campo de potencial pedía saltos que el dron no puede dar
+            dt = t - getattr(self, "_react_t", -1.0)
+            base = getattr(self, "_react_v", None)
+            if base is None or not 0.0 < dt < 0.5:
+                base = np.asarray(est_v, float)
+                dt = 0.05
+            step = REACT_RAMP * self.prof.acc_hor * self.P["acc_k"] * dt
+            dv = v - base
+            ndv = float(np.linalg.norm(dv))
+            if ndv > step:
+                v = base + dv * (step / ndv)
+            self._react_t, self._react_v = t, v.copy()
+        return est_p.copy(), v, zero
+
+    def _dwa(self, v, u, est_v, rays, fresh):
+        """Ventana dinámica (ver DWA): de las direcciones cercanas a la de `v`, la que más avanza hacia `u` después de
+        Collision Prevention. Se recalcula con cada lectura nueva de los telémetros; entre medias, el mismo giro."""
+        h = math.hypot(v[0], v[1])
+        if h < 0.5 or not rays:
+            return v
+        if fresh or not hasattr(self, "_dwa_turn"):
+            best, self._dwa_turn, self._dwa_k = -math.inf, 0.0, 1.0
+            for k in range(DWA_N):
+                a = math.radians(-DWA_SPAN + 2 * DWA_SPAN * k / (DWA_N - 1))
+                c, s = math.cos(a), math.sin(a)
+                cand = np.array([v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]])
+                lim, _ = collision_prevention(cand.copy(), np.zeros(3), rays, self.prof, est_v, 0.0, self.P)
+                score = float(lim[:2] @ u[:2]) - DWA_TURN * abs(a) * h
+                if score > best:
+                    best, self._dwa_turn = score, a
+                    n = math.hypot(lim[0], lim[1])
+                    self._dwa_k = min(1.0, n / h) if h > 1e-6 else 1.0
+        c, s = math.cos(self._dwa_turn), math.sin(self._dwa_turn)
+        return np.array([(v[0] * c - v[1] * s) * self._dwa_k, (v[0] * s + v[1] * c) * self._dwa_k, v[2]])
 
     def _cruise(self):
         """Velocidad de crucero: la del perfil por el factor `cruise`, sin pasar del 90 % de la máxima."""
@@ -247,8 +476,8 @@ class Mission:
             # (buscar la meta, en cambio, a la velocidad de crucero de fábrica, no la ajustada: el detector necesita
             # tiempo para ver bien, y con el crucero ajustado el Matrice llegaba a 17 m/s a los puntos de búsqueda)
             # (buscar a 1,5-2 veces el crucero no acorta nada: 40 semillas, los tres drones)
-            v = min(0.9 * self.prof.v_max if self.evader else self.prof.v_cruise, self.v_sense)
-            new = plan(space, grid, self.prof, p_est, self.search_goal, v, 0.0,
+            v = min(0.9 * self.prof.v_max if self.camera_only else self.prof.v_cruise, self.v_sense)
+            new = self._planner(space, grid, self.prof, p_est, self.search_goal, v, 0.0,
                        self.margin, self.speed_now, min_margin=self.P["margin"], start_vel=self.vel_now)
             if new is None:
                 return False
@@ -257,8 +486,19 @@ class Mission:
         prof = self.prof
         if self.mode == "carrera":
             v = end = self._race_v()
-            if self.sprint and self.prof.acc_max > self.prof.acc_hor:   # sprint: acelera con todo lo que puede
-                prof = dataclasses.replace(self.prof, acc_max=0.0, acc_hor=self.prof.acc_max)
+            # aceleración de la carrera: la del planificador por acc_k (entrenado), sin pasar del 90 % de la física
+            # (g·tan de la inclinación máxima); en el sprint, al menos acc_max (MPC_ACC_HOR_MAX en PX4)
+            a_plan = min(self.prof.acc_hor * self.P["acc_k"], 0.9 * G * math.tan(self.prof.tilt_max))
+            if self.sprint:
+                a_plan = max(a_plan, self.prof.acc_max)
+            # y el picado hacia la meta (a 1 m del suelo) sin el límite de bajada de los modos automáticos
+            # (MPC_Z_V_AUTO_DN: pensado para bajar en vertical, donde está el riesgo del anillo de vórtice; bajando en
+            # diagonal con velocidad horizontal no lo hay): RACE_DIVE veces la bajada del fabricante (ESTIMADO)
+            # y el tirón de los modos manuales (MPC_JERK_MAX, 8 m/s³ por defecto en PX4) en vez del de misión
+            # (MPC_JERK_AUTO, 4): el perfil de velocidad se suaviza menos y no recorta los picos de las trayectorias
+            # cortas (clásico en el X650, 60 semillas: mixto 13,1 → 12,8 s, bosque 18,4 → 17,3 s, sin choques)
+            prof = dataclasses.replace(self.prof, acc_max=0.0, acc_hor=max(a_plan, self.prof.acc_hor),
+                                       v_down=self.prof.v_down * RACE_DIVE, jerk=max(self.prof.jerk, JERK_RACE))
             goal = self.gate_est
             if self.moving:  # volar hacia donde ESTARÁ el objetivo
                 p_t, v_t = self._track(t)
@@ -270,10 +510,10 @@ class Mission:
                     goal = np.array([cand[0], cand[1], self._ground_z(cand[0], cand[1]) + 2.0])
                     self.traj = None
                     if pre is not None:
-                        self.traj = plan(space, grid, prof, p_est, goal, v, end, self.margin, v0, pre,
+                        self.traj = self._planner(space, grid, prof, p_est, goal, v, end, self.margin, v0, pre,
                                          min_margin=self.P["margin"])
                     if self.traj is None:
-                        self.traj = plan(space, grid, prof, p_est, goal, v, end, self.margin,
+                        self.traj = self._planner(space, grid, prof, p_est, goal, v, end, self.margin,
                                          self.speed_now, min_margin=self.P["margin"], start_vel=self.vel_now)
                     if self.traj is not None:
                         self.intercept = goal
@@ -292,10 +532,10 @@ class Mission:
             goal = np.array([self.pad_est[0], self.pad_est[1], self.pad_z_est + agl])
             v, end = min(self._cruise(), self.v_sense), 0.0
         mm = self.P["margin"]
-        new = plan(space, grid, prof, p_est, goal, v, end, self.margin, v0, pre, min_margin=mm) \
+        new = self._planner(space, grid, prof, p_est, goal, v, end, self.margin, v0, pre, min_margin=mm) \
             if pre is not None else None
         if new is None:
-            new = plan(space, grid, prof, p_est, goal, v, end, self.margin, self.speed_now, min_margin=mm,
+            new = self._planner(space, grid, prof, p_est, goal, v, end, self.margin, self.speed_now, min_margin=mm,
                        start_vel=self.vel_now)
         if new is None:
             if self.traj is None:  # ni siquiera hay un primer plan
@@ -312,7 +552,7 @@ class Mission:
         """Pide a la estrategia el siguiente punto y planifica hasta él (si no hay camino, prueba otro)."""
         for _ in range(4):
             # al vehículo que huye se le busca más alto (+7 m): los edificios y árboles tapan menos y se ve más terreno
-            agl = self.search_agl + (7.0 if self.evader else 0.0)
+            agl = self.search_agl + (7.0 if self.camera_only else 0.0)
             self.search_goal = self.search.next_goal(est_p, self._team_info(), agl)
             # si propone 3 veces seguidas el sitio donde ya está, desde ahí no ve esa zona (una azotea la tapa, por
             # ejemplo): se descarta. Antes el dron se quedaba ahí parado hasta agotar el tiempo
@@ -330,7 +570,8 @@ class Mission:
 
     def gimbal_aim(self):
         """(fase 4) Adónde apunta el gimbal de la cámara: al vehículo predicho mientras lo sigue; None si lo busca."""
-        if not self.evader or self.phase not in ("carrera", "persecución", "reintento", "despegue", "en tierra"):
+        if not self.camera_only or self.tracker.x is None \
+                or self.phase not in ("carrera", "persecución", "reintento", "despegue", "en tierra"):
             return None
         p, _ = self.tracker.state_at(self.tracker.t)
         return np.array([p[0], p[1], (self.target_z or 0.0) - 0.3])
@@ -358,6 +599,8 @@ class Mission:
         if "evader_look" not in readings:
             return
         if "target" in readings or t - self.last_seen_t < 0.3:   # ¡lo ha vuelto a ver (él u otro)! a interceptarlo
+            if self.found_t is None:
+                self.found_t = t
             self.phase = "carrera"
             self.blocked = None
             self._plan(t, est_p)
@@ -390,7 +633,7 @@ class Mission:
 
     def _search_step(self, t, est_p, readings):
         """Procesa una imagen de la cámara de detección y cambia de fase si hace falta."""
-        if self.evader:
+        if self.camera_only:
             self._evader_search_step(t, est_p, readings)
             return None
         found_by = getattr(self.search, "found_by", None)
@@ -406,7 +649,8 @@ class Mission:
         zero = np.zeros(3)
         if self.dash or self.refine:
             return self._dash_step(t, est_p, None if rel is None else est_p + rel)
-        if self.phase == "búsqueda" and s.candidate is not None and s.candidate.get("by", self.id) == self.id                 and (self.mode == "carrera" and ALL_OUT or self.mode == "aterrizar" and CONFIRM_IN_FLIGHT):
+        if self.phase == "búsqueda" and s.candidate is not None and s.candidate.get("by", self.id) == self.id \
+                and (self.mode == "carrera" and self.all_out or self.mode == "aterrizar" and self.confirm_in_flight):
             # sin pararse: hacia la detección (en carrera a toda velocidad; aterrizando, a crucero hasta 2,5 m sobre
             # ella), confirmándola por el camino con las imágenes que toma. Aterrizando, antes bajaba a 5 m, se
             # quedaba hasta 4 s mirándola y luego volvía a subir para ir a la plataforma: ~17 s de 43
@@ -501,7 +745,8 @@ class Mission:
             W = np.array([w for _, w in self.dash_hits])
             pos = (np.array([h for h, _ in self.dash_hits]) * W[:, None]).sum(axis=0) / W.sum()
             moved = float(np.linalg.norm(pos - self.gate_est + np.array([0, 0, 1.0])))
-            if self.phase == "carrera" and moved > 0.5 or self.phase == "crucero" and moved > 1.0                     and t - self.refine_t > 1.0:
+            if self.phase == "carrera" and moved > 0.5 or self.phase == "crucero" and moved > 1.0 \
+                    and t - self.refine_t > 1.0:
                 # (en la aproximación manda el aterrizaje de precisión; en crucero, replanificar a cada medio metro,
                 # bajando entre árboles, dejaba al Matrice 1,1 m fuera de su trayectoria y rozó una copa)
                 self.refine_t = t
@@ -582,7 +827,7 @@ class Mission:
                 else:
                     self._plan(t, est_p)
             return np.array([self.hold[0], self.hold[1], z]), np.array([0, 0, speed if z < top else 0.0]), zero, self.yaw
-        if self.evader and self.phase in ("carrera", "reintento", "persecución") and t - self.last_seen_t > 2.5:
+        if self.camera_only and self.phase in ("carrera", "reintento", "persecución") and t - self.last_seen_t > 2.5:
             # perdido = debería verlo (está cerca de donde lo predice) y no lo ve: se ha escondido. De lejos, la
             # cámara no alcanza: sigue volando hacia la predicción
             p_t, _ = self._track(t)
@@ -593,6 +838,7 @@ class Mission:
         if self.mode == "carrera" and t - self.sprint_t > 0.2:   # ¿ve la meta? (5 veces por segundo)
             self.sprint_t = t
             s = self._sprint_check(t, est_p)
+            self.ram = self.ram_on and s and self.ram_clear
             if s != self.sprint:
                 self.sprint = s
                 if self.phase == "carrera" and self.traj is not None and self.blocked is None:
@@ -630,14 +876,57 @@ class Mission:
                 # en la puerta, √(2·a·d) con la mitad de la aceleración (perfil de tiempo mínimo). Sin frenar nada se
                 # pasaba de largo, lo perdía de vista y lo capturaba menos (82 % frente a 95 %, 40 semillas).
                 # Si no, la de antes: proporcional a la distancia.
-                if ALL_OUT:
-                    close = min(self._race_v(), max(2.0, math.sqrt(prof.acc_hor * dist)))
+                if self.ram:
+                    # embestida: no frena para igualar la velocidad del vehículo en la puerta; la navegación
+                    # proporcional lo lleva a chocar con él (impactar también es llegar)
+                    close = self._race_v()
+                elif self.all_out:
+                    close = min(self._race_v(), max(2.0, math.sqrt(PURSUIT_K * prof.acc_hor * dist)))
                 else:
                     close = min(self.v_sense, max(2.0, 0.8 * dist))
                 v_ref = np.array([v_t[0], v_t[1], 0.0]) + d / max(dist, 1e-6) * close
+                # velocidad pedida SUAVIZADA (como el generador de consignas de PX4, MPC_ACC_HOR_MAX): cambia como
+                # mucho a la aceleración que el dron puede dar. Pidiendo de golpe 14 m/s a un Matrice que iba a 2, el
+                # control se saturaba a la inclinación máxima y no le quedaba fuerza lateral: se deslizaba contra un
+                # arbusto o el borde
+                # (solo en horizontal: en vertical manda el lazo de posición; con la rampa también en z seguía
+                # bajando en picado tras la carrera y se estrellaba contra el terreno)
+                dt = t - self.pursuit_t
+                recent = self.pursuit_v is not None and 0.0 < dt < 0.5
+                base = self.pursuit_v[:2] if recent else np.asarray(est_v[:2], float)   # al entrar: la que lleva
+                step = (self.ram_acc() if self.ram else max(prof.acc_max, prof.acc_hor)) * (dt if recent else 0.05)
+                dv = v_ref[:2] - base
+                ndv = float(np.linalg.norm(dv))
+                if ndv > step:
+                    v_ref[:2] = base + dv * (step / ndv)
+                # y nunca hacia el borde más rápido de lo que puede frenar antes de él: el vehículo, pegado al
+                # borde, "huía" hacia fuera y la velocidad pedida lo seguía (choque contra el borde, semilla 3017).
+                # Con 2 sigmas del GPS de margen: el dron solo sabe dónde está con ese error (el Mini, ±0,75 m, creía
+                # estar a 1,6 m de donde estaba y rozaba el borde, Mini "rápido" semillas 3008 y 3012)
+                lim = 1.0 + prof.radius + 2.0 * prof.gps_sigma
+                for i, top in ((0, LENGTH), (1, WIDTH)):
+                    v_hi = math.sqrt(2.0 * prof.acc_hor * max(top - lim - est_p[i], 0.0))
+                    v_lo = math.sqrt(2.0 * prof.acc_hor * max(est_p[i] - lim, 0.0))
+                    v_ref[i] = min(max(v_ref[i], -v_lo), v_hi)
+                # ni hacia la altura de la puerta más rápido de lo que puede frenar (bajando a 5 m/s desde la carrera
+                # se pasaba de la altura y tocaba el suelo, semilla 3002). Con 0,2 g: con 0,3 g el Matrice bajaba a 9 m/s
+                # y no frenaba antes de los arbustos; con 0,15 g la persecución en equipo tardaba 141 s en vez de <120
+                v_ref[2] = math.copysign(min(abs(v_ref[2]), math.sqrt(2.0 * 0.2 * G * abs(d[2]))), d[2])
+                self.pursuit_t, self.pursuit_v = t, v_ref.copy()
                 if math.hypot(v_ref[0], v_ref[1]) > 1.0:
                     self.yaw = math.atan2(v_ref[1], v_ref[0])
-                return aim, v_ref, np.zeros(3), self.yaw
+                # la consigna de posición, a como mucho CARROT (3 m) en horizontal (como el "carrot" de PX4): con el vehículo
+                # lejos, kp × (distancia) se sumaba a la velocidad pedida, la anulaba (rampa y límite del borde
+                # incluidos) y el control se saturaba hacia el vehículo: chocaba contra el borde (semillas 3016, 3036)
+                p_ref = aim.copy()
+                off = aim[:2] - est_p[:2]
+                n = float(np.linalg.norm(off))
+                if n > CARROT:
+                    p_ref[:2] = est_p[:2] + off * (CARROT / n)
+                # y en vertical a ≤ 1 m: con el vehículo 9 m más abajo, kp × 9 m pedía bajar a 9 m/s (el doble de
+                # v_down en carrera) y la rampa de frenada de arriba no servía: tocaba el suelo (Matrice, semilla 5006)
+                p_ref[2] = est_p[2] + min(max(aim[2] - est_p[2], -1.0), 1.0)
+                return p_ref, v_ref, np.zeros(3), self.yaw
             if self.phase == "persecución":  # se ha alejado: volver a interceptar
                 self._plan(t, est_p)
             elif t - self.last_plan_t > 1.0:  # el punto de intercepción cambia: replanificar cada segundo
@@ -671,13 +960,14 @@ class Mission:
             if self.blocked is not None:
                 return self.blocked, zero, zero, self.yaw
         if self.phase in ("crucero", "carrera", "búsqueda", "confirmación") and self.map is not None \
-                and t - self.check_t > 0.2 and self.map.version != self.map_checked:
+                and not self.reactive and t - self.check_t > 0.2 and self.map.version != self.map_checked:
             self.check_t, self.map_checked = t, self.map.version
             if not self._still_clear(t, est_p):
                 self.replans += 1
                 self.map_replans += 1
                 need = self.prof.radius + 0.5 * self.P["margin"]
-                if self.phase == "búsqueda" and self.search_goal is not None and not self.evader                         and float(self.map.grid().clearance_many(self.search_goal[None])[0]) < need:
+                if self.phase == "búsqueda" and self.search_goal is not None and not self.camera_only \
+                        and float(self.map.grid().clearance_many(self.search_goal[None])[0]) < need:
                     # el punto de búsqueda ha quedado pegado a algo recién visto (una copa): es solo un sitio desde el
                     # que mirar, así que se elige otro. Replanificando hacia él, el dron se quedaba dando vueltas
                     # alrededor (500 replanificaciones en un vuelo) sin llegar nunca
@@ -687,25 +977,66 @@ class Mission:
                 elif not self._plan(t, est_p, stitch=True):
                     self.blocked, self.blocked_t = est_p.copy(), t
                     return self.blocked, zero, zero, self.yaw
-        if self.phase == "carrera" and not self.moving and self.sprint and TERMINAL and self.gate_est is not None:
+        if self.phase == "carrera" and not self.moving and self.sprint and self.terminal_on \
+                and self.gate_est is not None:
             # GUÍA TERMINAL (carrera a una meta quieta que ve): en los últimos metros deja la trayectoria y apunta
             # directamente a la puerta a la velocidad que lleva (persecución pura, como los drones de carreras
             # autónomos). A 12 m/s el dron se quedaba 1-2 m fuera de la trayectoria al final y rozaba la puerta de
             # 1 m sin cruzarla. Si ya la ha dejado atrás, vuelve a por ella
             d = self.gate_est - est_p
             dist = float(np.linalg.norm(d))
-            spd = max(self.speed_now, 3.0)
-            if dist < max(5.0, 0.7 * spd):
+            # a la velocidad de CARRERA, no a la que lleva: con la que llevaba, si bajaba un poco (el picado, la
+            # inclinación máxima) la referencia bajaba con ella y el dron cruzaba la meta a 2-3 m/s tras ir a 10
+            spd = max(self.speed_now, self._race_v(), 3.0)
+            if dist < max(5.0, self.P["term"] * spd) or self.ram:
                 if dist > 0.5 and float(d @ est_v) < 0:
-                    self.phase, self.t0 = "reintento", t
+                    # la ha pasado de largo: trayectoria de vuelta (esquivando obstáculos), no "pararse en la puerta":
+                    # a 10 m/s, con la referencia quieta en la puerta, un Matrice siguió 4 m por inercia y chocó
+                    if t - self.retry_t > 1.0:
+                        self.retry_t = t
+                        self._plan(t, est_p)
                 else:
-                    v_ref = d / max(dist, 1e-6) * spd
+                    u = d / max(dist, 1e-6)
+                    # la curva que queda hasta la puerta tiene que caber en lo que el dron puede girar: aceleración
+                    # lateral necesaria ≈ 2·v²·sen θ / d (el arco que llega a la puerta); si pasa de la que da su
+                    # inclinación máxima, velocidad justa para tomarla (un Matrice de 30° a 9 m/s, con ~14 m de radio
+                    # de giro mínimo, pasaba a 1,2 m de la puerta y chocaba después con lo que hubiera detrás)
+                    sp_now = float(np.linalg.norm(est_v))
+                    if sp_now > 1.0:
+                        sin_t = min(1.0, float(np.linalg.norm(np.cross(est_v / sp_now, u))))
+                        a_lat = 0.9 * (self.ram_acc() if self.ram else G * math.tan(prof.tilt_max))
+                        spd = min(spd, max(3.0, math.sqrt(a_lat * dist / (2 * max(sin_t, 0.05)))))
+                    v_ref = u * spd
+                    # NAVEGACIÓN PROPORCIONAL (la ley de guiado de los interceptores): aceleración = N · velocidad de
+                    # cierre · giro de la línea de visión, perpendicular a ella. Con la persecución pura (apuntar a
+                    # donde está la puerta) un Matrice a 9 m/s la pasaba a 1,5 m, sin tiempo para corregir
+                    vc = float(est_v @ u)
+                    los_rate = np.cross(d, -est_v) / max(dist * dist, 1e-6)
+                    a_pn = PN_N * max(vc, 0.0) * np.cross(los_rate, u)
                     if math.hypot(v_ref[0], v_ref[1]) > 1.0:
                         self.yaw = math.atan2(v_ref[1], v_ref[0])
-                    return est_p.copy(), v_ref, zero, self.yaw
-        if self.phase in ("crucero", "carrera", "búsqueda", "confirmación"):
+                    return est_p.copy(), v_ref, a_pn, self.yaw
+        if self.phase in ("crucero", "carrera", "búsqueda", "confirmación") and self.reactive:
+            p, v, a = self._reactive(t, est_p, est_v, readings)
+        elif self.phase in ("crucero", "carrera", "búsqueda", "confirmación"):
             p, v, a = self.traj.sample(t - self.t0)
-            if np.linalg.norm(p - est_p) > 3.0:  # nos hemos desviado mucho: replanificar desde aquí
+            if PROGRESS:
+                # VARIABLE DE PROGRESO (como el control de contorno, MPCC: Lam et al. 2010, Romero et al. 2022): si el
+                # dron va por detrás de la referencia (la anticolisión lo ha frenado, la inercia de un giro), el reloj
+                # de la trayectoria se ralentiza en vez de dejar que la referencia se escape. Antes, a 3 m de
+                # distancia se replanificaba desde el estado del dron, casi parado (caída media de la velocidad
+                # pedida de ~2 m/s en esas replanificaciones)
+                dt = t - getattr(self, "_ref_t", t)
+                self._ref_t = t
+                sp = float(np.linalg.norm(v))
+                if 0.0 < dt < 0.1 and sp > 0.5:
+                    ahead = float((p - est_p) @ v) / sp          # cuánto va la referencia por delante, en su dirección
+                    rate = min(1.0, max(PROGRESS_MIN, 1.0 - (ahead - PROGRESS_E0) / PROGRESS_E1))
+                    if rate < 1.0:
+                        self.t0 += dt * (1.0 - rate)
+                        p, v, a = self.traj.sample(t - self.t0)
+        if self.phase in ("crucero", "carrera", "búsqueda", "confirmación"):
+            if not self.reactive and np.linalg.norm(p - est_p) > 3.0:  # desviado: replanificar desde aquí
                 self.replans += 1
                 if self._plan(t, est_p):
                     p, v, a = self.traj.sample(0.0)
@@ -717,7 +1048,10 @@ class Mission:
                 c = self.search._center
                 if math.hypot(c[0] - est_p[0], c[1] - est_p[1]) > 1.0:
                     self.yaw = math.atan2(c[1] - est_p[1], c[0] - est_p[0])
-            if t - self.t0 >= self.traj.duration:
+            # (el reactivo no sigue el perfil de velocidad de la recta: termina el tramo solo al LLEGAR. Antes, al
+            # agotarse la duración de la recta a 23 m de la meta, pasaba a "reintento", iba en línea recta contra
+            # el obstáculo de delante, Collision Prevention lo paraba y se quedaba ahí hasta agotar el tiempo)
+            if (self.react_arrived if self.reactive else t - self.t0 >= self.traj.duration):
                 if self.phase == "búsqueda":           # punto alcanzado: el siguiente
                     self._next_search(t, est_p)
                 elif self.phase == "confirmación":     # encima de la detección: quieto, mirándola
@@ -726,6 +1060,12 @@ class Mission:
                         self.yaw = math.atan2(c["pos"][1] - est_p[1], c["pos"][0] - est_p[0])
                     return self.traj.P[-1].copy(), zero, zero, self.yaw
                 else:
+                    if self.mode == "carrera" and not self.moving and not self.reactive and t - self.retry_t > 1.0:
+                        # carrera a una meta quieta que no ha cruzado: trayectoria de vuelta (esquivando), no una
+                        # referencia quieta en la puerta (con inercia, el dron seguía de largo contra lo que hubiera)
+                        self.retry_t = t
+                        if self._plan(t, est_p):
+                            return p, v, a, self.yaw
                     self.phase = "reintento" if self.mode == "carrera" else "aproximación"
                     self.t0 = t
             return p, v, a, self.yaw

@@ -78,6 +78,24 @@ class ClearanceGrid:
         return (np.array(c) + 0.5) * CELL
 
 
+# VUELO HORIZONTAL. Antes, el coste de A* por pasar cerca de algo usaba la holgura 3D, en la que el SUELO cuenta:
+# volar a 1,5 m "costaba" como rozar un obstáculo y el camino subía a 3 m y luego bajaba a la meta (el X650 pasaba el
+# 21-26 % de la carrera subiendo o bajando a más de 1 m/s, y todo el empuje que va a subir no va hacia delante).
+# Ahora la cercanía se mide en HORIZONTAL (distancia en su propio plano a lo sólido: un obstáculo o una ladera al
+# lado sí cuentan, el suelo de debajo no) y subir o bajar cuesta VZ_COST veces más que avanzar.
+# PROBADO Y DESCARTADO (26-09-2026, X650, 60 semillas por caso, clásico e híbrido): la mitad de tiempo subiendo o
+# bajando (26 → 14 %) y altura media 3,1 → 2,0 m, pero ni más rápido (+1 a +6 %: volando bajo, los arbustos de
+# 2-3 m quedan en el camino y antes los sobrevolaba) ni menos energía (590 W igual). Lo que limita la velocidad es
+# frenar dentro del alcance de los sensores, no el empuje. Por defecto, como antes (DRON_NEAR=h, DRON_VZ_COST=2: la
+# variante)
+NEAR_MODE = os.environ.get("DRON_NEAR", "3d")
+VZ_COST = float(os.environ.get("DRON_VZ_COST", 1.0))
+# COSTE DE LO NO VISTO (planificación "optimista" corregida, como los planificadores de exploración): con el mapa
+# desconocido, A* trata lo no observado como libre y traza la ruta por ahí; al descubrir algo, hay que desviarse y
+# frenar (el clásico era un 13-16 % más lento sin mapa que con él). Cada metro por lo no visto cuesta UNKNOWN_COST
+# veces más. PROBADO Y DESACTIVADO (clásico en el X650, 60 semillas por caso): con 1,3, igual o +4 % en el bosque; con
+# 2, 4 choques de 60 en cada escenario (rutas pegadas a lo ya visto, junto a los obstáculos). DRON_UNKNOWN_COST=1,3: con él
+UNKNOWN_COST = float(os.environ.get("DRON_UNKNOWN_COST", 1.0))
 MAX_EXPANSIONS = 60_000  # presupuesto de nodos: una búsqueda nunca congela la simulación
 
 
@@ -108,20 +126,38 @@ def astar(grid: ClearanceGrid, start, goal, need: float,
         return None
     nx, ny, nz = grid.shape
     px, py, pz = nx + 2, ny + 2, nz + 2           # borde de 1 celda bloqueada: sin comprobar límites
-    free = np.zeros((px, py, pz), bool)
-    free[1:-1, 1:-1, 1:-1] = grid.clr > need
-    near = np.ones((px, py, pz))
-    near[1:-1, 1:-1, 1:-1] = 1.0 + 1.5 * np.clip(2.5 - grid.clr, 0, 2.5) / 2.5  # más caro cerca de obstáculos
+    # libre y coste de cada celda como LISTAS de Python (leer elementos sueltos de un array de numpy en el bucle
+    # es varias veces más lento), guardadas por rejilla y holgura: las replanificaciones sobre el mismo mapa las
+    # reutilizan
+    cache = grid.__dict__.setdefault("_astar", {})
+    key = round(need, 2)
+    if key not in cache:
+        free = np.zeros((px, py, pz), bool)
+        free[1:-1, 1:-1, 1:-1] = grid.clr > need
+        near = np.ones((px, py, pz))
+        if NEAR_MODE == "h":
+            from scipy.ndimage import distance_transform_edt
+            solid = grid.clr <= 0.0
+            # distancia en el plano de cada altura (en z, un paso enorme: no cuenta lo de arriba ni lo de abajo)
+            hclr = distance_transform_edt(~solid, sampling=(CELL, CELL, 1e6)) - 0.5 * CELL if solid.any() \
+                else np.full(grid.clr.shape, 1e6)
+            near[1:-1, 1:-1, 1:-1] = 1.0 + 1.5 * np.clip(2.5 - hclr, 0, 2.5) / 2.5
+        else:
+            near[1:-1, 1:-1, 1:-1] = 1.0 + 1.5 * np.clip(2.5 - grid.clr, 0, 2.5) / 2.5  # más caro cerca de obstáculos
+        unseen = getattr(grid, "unseen", None)
+        if UNKNOWN_COST != 1.0 and unseen is not None and unseen.shape == grid.clr.shape:
+            near[1:-1, 1:-1, 1:-1] *= np.where(unseen, UNKNOWN_COST, 1.0)
+        cache[key] = (free.ravel().tolist(), near.ravel().tolist())
+    free_f, near_f = cache[key]
     flat = lambda c: ((c[0] + 1) * py + (c[1] + 1)) * pz + (c[2] + 1)
     si, gi = flat(s), flat(g)
-    free_f, near_f = free.ravel(), near.ravel()
-    free_f[si] = free_f[gi] = True  # salida/meta: se permite aunque rocen el margen
-    moves = [((dx * py + dy) * pz + dz, math.sqrt(dx * dx + dy * dy + dz * dz))
+    fs, fg = free_f[si], free_f[gi]
+    free_f[si] = free_f[gi] = True  # salida/meta: se permite aunque rocen el margen (se restauran al acabar)
+    moves = [((dx * py + dy) * pz + dz, math.sqrt(dx * dx + dy * dy + (VZ_COST * dz) ** 2))
              for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dy, dz) != (0, 0, 0)]
     gx, gy, gz = g[0] + 1, g[1] + 1, g[2] + 1
-    best = np.full(free_f.size, np.inf)
-    parent = np.full(free_f.size, -1, dtype=np.int64)
-    best[si] = 0.0
+    best = {si: 0.0}                              # solo las celdas visitadas
+    parent = {si: -1}
 
     def h(i):
         z = i % pz
@@ -131,31 +167,35 @@ def astar(grid: ClearanceGrid, start, goal, need: float,
 
     heap = [(h(si), 0.0, si)]
     expanded = 0
-    while heap:
-        _, cost, i = heapq.heappop(heap)
-        if i == gi:
-            path = []
-            while i != -1:
-                x, rem = divmod(i, py * pz)
-                y, z = divmod(rem, pz)
-                path.append((x - 1, y - 1, z - 1))
-                i = int(parent[i])
-            return path[::-1]
-        if cost > best[i]:
-            continue
-        expanded += 1
-        if expanded > max_expansions:
-            return None
-        for off, length in moves:
-            n = i + off
-            if not free_f[n]:
+    inf = math.inf
+    try:
+        while heap:
+            _, cost, i = heapq.heappop(heap)
+            if i == gi:
+                path = []
+                while i != -1:
+                    x, rem = divmod(i, py * pz)
+                    y, z = divmod(rem, pz)
+                    path.append((x - 1, y - 1, z - 1))
+                    i = parent[i]
+                return path[::-1]
+            if cost > best.get(i, inf):
                 continue
-            nc = cost + length * near_f[n]
-            if nc < best[n]:
-                best[n] = nc
-                parent[n] = i
-                heapq.heappush(heap, (nc + h(n), nc, n))
-    return None
+            expanded += 1
+            if expanded > max_expansions:
+                return None
+            for off, length in moves:
+                n = i + off
+                if not free_f[n]:
+                    continue
+                nc = cost + length * near_f[n]
+                if nc < best.get(n, inf):
+                    best[n] = nc
+                    parent[n] = i
+                    heapq.heappush(heap, (nc + h(n), nc, n))
+        return None
+    finally:
+        free_f[si], free_f[gi] = fs, fg
 
 
 def segment_clear(space, a, b, need: float, step: float = 0.3) -> bool:
@@ -179,6 +219,45 @@ def trajectory_clear(space, traj, t_from: float, need: float, horizon: float = N
     if not len(P):
         return True
     return bool((space.clearance_many(P) >= need).all())
+
+
+# APROXIMACIÓN HORIZONTAL a la meta que se cruza sin frenar (carrera). Las celdas de A* son de 1 m de alto: el camino
+# llegaba a la altura de la celda de encima (2,5 m) y, justo antes de la puerta (1,5 m), caía 1 m de golpe. Ese quiebro
+# obligaba al perfil de velocidad a frenar de 9 a ~1 m/s y el frenazo se propagaba hacia atrás: la trayectoria media
+# del X650 no pasaba de 5,3 m/s de pico. Ahora, si hay sitio, se añade un punto a la altura de la puerta APPROACH
+# metros antes (como la última recta de un piloto de carreras): baja pronto y suave, y cruza la puerta nivelado.
+# PROBADO Y DESACTIVADO (X650, 60 semillas por caso): la trayectoria cruza la puerta a 7 m/s en vez de 3,3, pero la
+# carrera no acelera (clásico +1 a +4 %; el híbrido no la usa): antes de llegar ahí el dron ha replanificado 20-25 veces
+# y cerca de la puerta manda la guía terminal. DRON_APPROACH=6: con ella
+APPROACH = float(os.environ.get("DRON_APPROACH", 0.0))
+
+
+def level_approach(world: World, pts: List[np.ndarray], need: float) -> List[np.ndarray]:
+    if len(pts) < 2:
+        return pts
+    goal = pts[-1]
+    for L in (APPROACH, 0.6 * APPROACH, 0.35 * APPROACH):
+        # los puntos del camino a menos de L m (en horizontal) de la puerta se sustituyen por el de aproximación
+        k = len(pts) - 2
+        while k > 0 and float(np.linalg.norm(pts[k][:2] - goal[:2])) < L:
+            k -= 1
+        prev = pts[k]
+        d = goal[:2] - prev[:2]
+        n = float(np.linalg.norm(d))
+        if n < 1.0:
+            continue
+        Lk = min(L, 0.8 * n)
+        # a la altura de la puerta o, si ahí no cabe con la holgura (la puerta está a ~1 m del suelo y la holgura del
+        # planificador, radio + margen, es ~1,4 m: el suelo cuenta), a la más baja que quepa; el último tramo baja
+        # suave hasta la puerta (≤ 0,75 m en Lk metros). El tramo nivelado se comprueba hasta la vertical de la
+        # puerta; la bajada final, no (A* también exime la celda de la meta)
+        for dz in (0.0, 0.25, 0.5, 0.75):
+            q = np.array([goal[0] - d[0] / n * Lk, goal[1] - d[1] / n * Lk, goal[2] + dz])
+            over = np.array([goal[0] - d[0] / n * min(1.0, 0.3 * Lk), goal[1] - d[1] / n * min(1.0, 0.3 * Lk),
+                             goal[2] + dz])
+            if segment_clear(world, prev, q, need) and segment_clear(world, q, over, need):
+                return pts[:k + 1] + [q, goal]
+    return pts
 
 
 def string_pull(world: World, pts: List[np.ndarray], need: float) -> List[np.ndarray]:
@@ -258,47 +337,77 @@ class Trajectory:
                 "duration": self.duration, "length": self.length}
 
 
+# PERFIL DE VELOCIDAD CON ARRASTRE (parametrización temporal óptima, TOPP, con la dinámica longitudinal del dron): la
+# aceleración del planificador es la del empuje horizontal; el arrastre (k·v²) la reduce al acelerar y se suma al
+# frenar. Sin él, el perfil suponía la misma aceleración a 10 m/s que parado (en el X650, a 10 m/s el arrastre se
+# come 6,8 de 8,8 m/s²) y frenaba como si el aire no ayudara.
+# PROBADO Y DESACTIVADO (clásico en el X650, 60 semillas por caso): más fiel (el dron va por detrás de la referencia
+# un 36 % del tiempo en vez de un 40 %), pero un 1-4 % más lento salvo con el objetivo rápido (−2 %): pedir algo más
+# de lo que da hace que vaya siempre al máximo. DRON_DRAG_PROFILE=1: con él
+DRAG_PROFILE = float(os.environ.get("DRON_DRAG_PROFILE", 0.0))
+
+
 def velocity_profile(P: np.ndarray, prof: Profile, v_cruise: float, end_speed: float = 0.0,
                      start_speed: float = 0.0) -> np.ndarray:
+    # (vectorizado: con un bucle de numpy por punto, el perfil se llevaba ~18 ms de cada replanificación de ~55)
     n = len(P)
-    vlim = np.full(n, v_cruise)
+    vlim = np.full(n, float(v_cruise))
     a_lat = prof.acc_hor
-    for i in range(1, n - 1):  # curvatura por el círculo que pasa por 3 puntos
-        a, b, c = P[i - 1], P[i], P[i + 1]
-        ab, bc, ca = np.linalg.norm(b - a), np.linalg.norm(c - b), np.linalg.norm(a - c)
-        area2 = np.linalg.norm(np.cross(b - a, c - a))
-        k = 2 * area2 / max(ab * bc * ca, 1e-9)
-        if k > 1e-6:
-            vlim[i] = min(vlim[i], math.sqrt(a_lat / k))
+    if n > 2:  # curvatura por el círculo que pasa por 3 puntos
+        a, b, c = P[:-2], P[1:-1], P[2:]
+        ab = np.linalg.norm(b - a, axis=1)
+        bc = np.linalg.norm(c - b, axis=1)
+        ca = np.linalg.norm(a - c, axis=1)
+        area2 = np.linalg.norm(np.cross(b - a, c - a), axis=1)
+        k = 2 * area2 / np.maximum(ab * bc * ca, 1e-9)
+        with np.errstate(divide="ignore"):
+            vlim[1:-1] = np.where(k > 1e-6, np.minimum(vlim[1:-1], np.sqrt(a_lat / np.maximum(k, 1e-12))), vlim[1:-1])
     seg = P[1:] - P[:-1]
-    for i, d in enumerate(seg):  # límites de subida y bajada
-        L = np.linalg.norm(d)
-        if L > 1e-9:
-            sz = d[2] / L
-            if sz > 1e-3:
-                vlim[i] = min(vlim[i], prof.v_up / sz)
-            elif sz < -1e-3:
-                vlim[i] = min(vlim[i], prof.v_down / -sz)
+    L = np.linalg.norm(seg, axis=1)
+    sz = np.where(L > 1e-9, seg[:, 2] / np.maximum(L, 1e-12), 0.0)       # límites de subida y bajada
+    with np.errstate(divide="ignore"):
+        lim = np.where(sz > 1e-3, prof.v_up / np.maximum(sz, 1e-12),
+                       np.where(sz < -1e-3, prof.v_down / np.maximum(-sz, 1e-12), np.inf))
+    vlim[:-1] = np.minimum(vlim[:-1], lim)
     vlim[0] = min(vlim[0], start_speed)
     vlim[-1] = min(vlim[-1], end_speed)
-    v = vlim.copy()
-    ds = np.linalg.norm(seg, axis=1)
-    for i in range(1, n):  # acelerar como mucho a_max
-        v[i] = min(v[i], math.sqrt(v[i - 1] ** 2 + 2 * prof.acc_hor * ds[i - 1]))
-    for i in range(n - 2, -1, -1):  # frenar a tiempo
-        v[i] = min(v[i], math.sqrt(v[i + 1] ** 2 + 2 * prof.acc_hor * ds[i]))
+    v = vlim.tolist()
+    ds = L.tolist()
+    two_a = 2 * prof.acc_hor
+    # (TOPP con arrastre, ver DRAG_PROFILE: acelerando, el arrastre resta; frenando, ayuda)
+    kd = prof.drag * DRAG_PROFILE
+
+    def passes(v):
+        for i in range(1, n):  # acelerar como mucho a_max
+            m = math.sqrt(max(v[i - 1] ** 2 + two_a * ds[i - 1] - 2 * kd * v[i - 1] ** 2 * ds[i - 1], v[i - 1] ** 2))
+            if v[i] > m:
+                v[i] = m
+        for i in range(n - 2, -1, -1):  # frenar a tiempo
+            m = math.sqrt(v[i + 1] ** 2 + two_a * ds[i] + 2 * kd * v[i + 1] ** 2 * ds[i])
+            if v[i] > m:
+                v[i] = m
+        return v
+    v = np.array(passes(v))
     w = max(1, int(round(prof.acc_hor / prof.jerk / 0.05)))  # suavizado ≈ límite de tirón
     for _ in range(2):
         v = np.minimum(np.convolve(np.pad(v, w, mode="edge"), np.ones(2 * w + 1) / (2 * w + 1), "valid"), v)
     v[0], v[-1] = min(v[0], start_speed), min(v[-1], end_speed)
-    for i in range(1, n):  # el suavizado puede dejar saltos junto a los extremos: se repasan los límites
-        v[i] = min(v[i], math.sqrt(v[i - 1] ** 2 + 2 * prof.acc_hor * ds[i - 1]))
-    for i in range(n - 2, -1, -1):
-        v[i] = min(v[i], math.sqrt(v[i + 1] ** 2 + 2 * prof.acc_hor * ds[i]))
+    v = np.array(passes(v.tolist()))   # el suavizado puede dejar saltos junto a los extremos: se repasan los límites
     return np.maximum(v, 0.0)
 
 
 SMOOTHER = os.environ.get("DRON_SMOOTHER", "chaikin")   # "bspline" (EGO-Planner) o "chaikin"
+
+
+def straight(prof: Profile, start, goal, v_cruise: float, end_speed: float = 0.0, start_speed: float = 0.0):
+    """Recta de start a goal con su perfil de velocidad (el piloto reactivo: no planifica, la sigue esquivando)."""
+    a, b = np.asarray(start, float), np.asarray(goal, float)
+    P = resample([a, (a + b) / 2, b], DS)
+    if len(P) < 3:
+        P = np.array([a, a + (b - a) * 0.5, b]) if np.linalg.norm(b - a) > 1e-6 else np.array([a, a, a + 1e-3])
+    tr = Trajectory(P, velocity_profile(P, prof, v_cruise, end_speed, start_speed))
+    tr.v_cruise, tr.end_speed = v_cruise, end_speed
+    return tr
 
 
 def free_goal_near(grid, goal, need: float, radius: float = 2.5):
@@ -401,6 +510,8 @@ def plan(world, grid, prof: Profile, start, goal, v_cruise: Optional[float] = No
             return None
     pts = [np.array(start, float)] + [grid.center(c) for c in cells[1:-1]] + [np.array(goal, float)]
     pts = string_pull(world, pts, need)
+    if end_speed > 0 and APPROACH > 0:
+        pts = level_approach(world, pts, need)
     if prefix is not None:   # cosido: el suavizado ve la dirección con la que llega el dron
         pts = [np.asarray(prefix[-2], float)] + pts
     smooth = bspline_smooth(grid, pts, need) if SMOOTHER == "bspline" else None

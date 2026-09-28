@@ -93,6 +93,12 @@ class Terrain:
         H = self.H
         return float((H[i, j] * (1 - fx) + H[i + 1, j] * fx) * (1 - fy) + (H[i, j + 1] * (1 - fx) + H[i + 1, j + 1] * fx) * fy)
 
+    @property
+    def flat(self) -> bool:
+        if not hasattr(self, "_flat"):
+            self._flat = not np.any(self.H)
+        return self._flat
+
     def heights(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         gx = np.clip(x / TERRAIN_RES, 0.0, self.nx - 1.001)
         gy = np.clip(y / TERRAIN_RES, 0.0, self.ny - 1.001)
@@ -265,11 +271,17 @@ class World:
         o = np.asarray(o, float)
         D = np.asarray(dirs, float)
         best = self._rays_terrain(o, D, tmax, step)
-        cyl = [ob for ob in self.obstacles if isinstance(ob, Cylinder)]
-        box = [ob for ob in self.obstacles if isinstance(ob, Box)]
+        CY, BX = self._arrays()
+        # solo los obstáculos al alcance de los rayos (en el bosque extremo, ~50 de ~500): mismo resultado, ~10×
+        # menos trabajo
+        if len(CY):
+            CY = CY[np.hypot(CY[:, 0] - o[0], CY[:, 1] - o[1]) - CY[:, 2] <= tmax]
+        if len(BX):
+            BX = BX[(BX[:, 0] - tmax <= o[0]) & (o[0] <= BX[:, 1] + tmax) & (BX[:, 2] - tmax <= o[1])
+                    & (o[1] <= BX[:, 3] + tmax)]
         with np.errstate(divide="ignore", invalid="ignore"):
-            if cyl:
-                cx, cy, r, b, top = (np.array([getattr(c, k) for c in cyl])[None, :] for k in ("x", "y", "r", "base", "top"))
+            if len(CY):
+                cx, cy, r, b, top = (CY[None, :, k] for k in range(5))
                 dx, dy, dz = D[:, 0:1], D[:, 1:2], D[:, 2:3]
                 ox, oy = o[0] - cx, o[1] - cy
                 a = dx ** 2 + dy ** 2
@@ -282,9 +294,9 @@ class World:
                 px, py = ox + tc * dx, oy + tc * dy
                 cap = np.where((tc >= 0) & (px * px + py * py <= r ** 2), tc, np.inf)
                 best = np.minimum(best, np.nanmin(np.minimum(side, cap), axis=1))
-            if box:
-                lo = np.array([[bx.x0, bx.y0, bx.base] for bx in box])[None]   # 1 × M × 3
-                hi = np.array([[bx.x1, bx.y1, bx.top] for bx in box])[None]
+            if len(BX):
+                lo = BX[None, :, [0, 2, 4]]   # 1 × M × 3: x0, y0, base
+                hi = BX[None, :, [1, 3, 5]]   # x1, y1, top
                 Dn = D[:, None, :]
                 par = np.abs(Dn) < 1e-12
                 t1, t2 = (lo - o) / np.where(par, np.nan, Dn), (hi - o) / np.where(par, np.nan, Dn)
@@ -296,7 +308,31 @@ class World:
                 best = np.minimum(best, np.where(hit, tmin, np.inf).min(axis=1))
         return np.minimum(best, tmax)
 
+    def _arrays(self):
+        """Tablas de cilindros (x, y, r, base, top) y cajas (x0, x1, y0, y1, base, top), calculadas una vez (los
+        obstáculos no se mueven). Antes se reconstruían en cada imagen de la cámara de profundidad."""
+        if getattr(self, "_arr_n", None) != len(self.obstacles):
+            cyl = [ob for ob in self.obstacles if isinstance(ob, Cylinder)]
+            box = [ob for ob in self.obstacles if isinstance(ob, Box)]
+            self._cyl_arr = np.array([[c.x, c.y, c.r, c.base, c.top] for c in cyl]).reshape(-1, 5)
+            self._box_arr = np.array([[b.x0, b.x1, b.y0, b.y1, b.base, b.top] for b in box]).reshape(-1, 6)
+            self._fp = np.array([ob.footprint() for ob in self.obstacles]).reshape(-1, 4)
+            self._arr_n = len(self.obstacles)
+        return self._cyl_arr, self._box_arr
+
+    def near(self, x: float, y: float, margin: float):
+        """Obstáculos cuya huella está a menos de `margin` de (x, y) (para comprobar choques sin recorrerlos todos)."""
+        self._arrays()
+        F = self._fp
+        idx = np.nonzero((x >= F[:, 0] - margin) & (x <= F[:, 1] + margin) & (y >= F[:, 2] - margin)
+                         & (y <= F[:, 3] + margin))[0]
+        return [self.obstacles[i] for i in idx]
+
     def _rays_terrain(self, o, D, tmax, step):
+        if self.terrain.flat:   # terreno llano (a altura 0): corte exacto con el plano, sin muestrear el rayo
+            with np.errstate(divide="ignore", invalid="ignore"):
+                t = np.where(D[:, 2] < -1e-9, -o[2] / D[:, 2], tmax)
+            return np.clip(np.where(o[2] <= 0, 0.0, t), 0.0, tmax)
         n = int(tmax / step) + 1
         t = np.linspace(0, tmax, n)[None, :]
         X, Y, Z = o[0] + D[:, 0:1] * t, o[1] + D[:, 1:2] * t, o[2] + D[:, 2:3] * t

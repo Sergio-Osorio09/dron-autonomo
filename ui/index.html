@@ -25,13 +25,18 @@
     <label class="field">Misión <select id="mode"></select></label>
     <label class="field" title="Desconocido: el dron construye su mapa con los sensores mientras vuela">Mapa <select id="map-mode"></select></label>
     <label class="field" title="El dron no sabe dónde está la meta, solo la zona donde buscarla">Búsqueda <select id="search"></select></label>
-    <label class="field" title="Fase 5: varios drones se reparten la búsqueda, o persiguen en equipo al vehículo que huye">Drones <select id="drones"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+    <label class="field hidden" title="Fase 5 (aparcada: queda para el futuro): varios drones se reparten la búsqueda, o persiguen en equipo al vehículo que huye">Drones <select id="drones"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
     <label class="field">Dron <select id="profile"></select></label>
+    <label class="field" title="Carga útil colgada bajo el dron: más peso, menos empuje por kilo (el X650 despega con 6,3 kg como mucho)">Carga <select id="payload">
+      <option value="0">Sin carga</option><option value="0.5">0,5 kg</option><option value="1">1 kg</option>
+      <option value="1.5">1,5 kg</option><option value="2">2 kg</option><option value="2.6">2,6 kg (máx.)</option>
+    </select></label>
+    <label class="field" id="pilot-field" title="El algoritmo que decide adónde y a qué velocidad va el dron">Piloto <select id="pilot"></select></label>
     <label class="field">Nivel <select id="level"></select></label>
     <label class="field">Terreno <select id="terrain"></select></label>
     <label class="field">Densidad <select id="density"></select></label>
     <label class="field">Meta <select id="goal-kind"></select></label>
-    <label class="field" title="Solo en modo carrera: la plataforma va sobre un vehículo">Objetivo <select id="motion"></select></label>
+    <label class="field" title="La plataforma va sobre un vehículo: solo en Carrera y sin búsqueda (al elegirlo, la misión pasa a Carrera)">Objetivo <select id="motion"></select></label>
     <label class="field">Semilla <input id="seed" type="text" inputmode="numeric" placeholder="aleatoria" size="7"></label>
     <label class="field">Viento <span class="rng"><input id="wind" type="range" min="0" max="14" step="0.5" value="4"><b id="wind-v">4 m/s</b></span></label>
     <label class="field">Dirección <span class="rng"><input id="wdir" type="range" min="0" max="359" step="1" value="60"><b id="wdir-v">60°</b></span></label>
@@ -50,6 +55,7 @@
     <div class="checks">
       <label class="check"><input id="precision" type="checkbox" checked> Aterrizaje de precisión</label>
       <label class="check"><input id="cp" type="checkbox" checked> Collision Prevention</label>
+      <label class="check" title="Carrera: con la meta a la vista y el pasillo libre, inclinación y velocidad desbloqueadas (todo el empuje de los 4 motores hacia la meta)"><input id="ram" type="checkbox" checked> Embestida</label>
       <label class="check"><input id="show-rays" type="checkbox" checked> Rayos</label>
       <label class="check"><input id="show-gps" type="checkbox" checked> GPS / estimación</label>
     </div>
@@ -69,6 +75,7 @@
         <div><span>Batería</span><b id="h-bat">100 %</b></div>
       </div>
       <div class="compass" id="compass"><canvas id="compass-c" width="96" height="96"></canvas></div>
+      <div class="sticks hidden" id="sticks" title="Lo que el autopiloto hace con las dos palancas de un mando (izquierda: empuje y guiñada; derecha: cabeceo y balanceo) y la potencia de cada uno de los 4 motores"><canvas id="sticks-c" width="250" height="104"></canvas></div>
       <div class="banner hidden" id="banner"></div>
       <div class="legend">
         <span><i class="grad"></i>trayectoria: lenta → rápida</span>
@@ -123,6 +130,7 @@
         <div><span>Encontrada en</span><b id="k-found">—</b></div>
         <div><span>Falsas alarmas</span><b id="k-false">—</b></div>
         <div><span>Enjambre</span><b id="k-swarm">—</b></div>
+        <div><span>Piloto</span><b id="k-pilot">—</b></div>
       </div>
     </div>
 

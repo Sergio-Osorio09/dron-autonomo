@@ -120,6 +120,7 @@ class OccupancyMap:
         """Rejilla de holgura (ESDF) del mapa actual, recalculada solo si el mapa ha cambiado."""
         if self._grid_version != self.version:
             self._grid = LearnedGrid(self.solid(), self.hit_sum, self.hit_n)
+            self._grid.unseen = ~self.seen          # lo no observado (A* puede cobrarlo algo más: planning.UNKNOWN_COST)
             self._grid_version = self.version
         return self._grid
 

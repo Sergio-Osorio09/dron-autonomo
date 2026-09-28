@@ -17,6 +17,7 @@ Búsqueda (`search`, fase 3): "no" (la meta es conocida) o una estrategia de sea
 "bayesiana"). El dron solo sabe la zona de búsqueda; la cámara de detección (sensors.py) le dice si ve la meta. La
 creencia usa el suelo y la oclusión según el mapa del dron (el real o el aprendido). Tiempo máximo: 300 s.
 """
+import dataclasses
 import math
 import random
 from typing import Dict, Optional
@@ -24,13 +25,13 @@ from typing import Dict, Optional
 import numpy as np
 
 from .control import PositionController
-from .dynamics import Multirotor
+from .dynamics import Multirotor, Multirotor6DOF
 from .estimator import Estimator
 from .mapping import OccupancyMap
-from .mission import GATE_RADIUS, PAD_RADIUS, Mission
-from .params import PROFILES
+from .mission import GATE_RADIUS, PAD_RADIUS, RACE_DIVE, Mission
+from .params import PROFILES, gust_peak, with_payload
 from .planning import ClearanceGrid, astar, MARGIN
-from . import tuning
+from . import pilots, tuning
 from .search import SEARCH_MODES, Searcher, make_area
 from .target import EvaderMotion
 from .sensors import NOISE_LEVELS, RAIN, VIO_SIGMA, Sensors, clearance_below, depth_sectors
@@ -42,6 +43,22 @@ MAP_MODES = ("conocido", "desconocido")
 FLIGHT_PHASES = ("crucero", "carrera", "persecución", "reintento", "búsqueda", "confirmación")
 DT = 0.005
 MAX_TIME = 150.0
+PHYSICS = __import__("os").environ.get("DRON_PHYSICS", "6dof")
+WIND_CHECK = __import__("os").environ.get("DRON_WIND_CHECK", "1") != "0"   # comprobación de viento (params.gust_peak)
+
+
+def _load_autotune():
+    """Ganancias del autotune de cada dron (eval/autotune.py), si las hay y no se desactivan con DRON_AUTOTUNE=0."""
+    import json
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "autotune.json")
+    if os.environ.get("DRON_AUTOTUNE", "1") == "0" or not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return {k: v["genes"] for k, v in json.load(f).items()}
+
+
+AUTOTUNE = _load_autotune()   # física por defecto (DRON_PHYSICS=simple: la de antes)
 GATE_CAMERA = __import__("os").environ.get("DRON_GATE_CAMERA", "1") != "0"   # 0: sin la cámara de la puerta
 
 
@@ -62,18 +79,21 @@ def make_flyable_world(level, seed, radius, goal_kind="suelo", terrain="plano", 
 
 
 class Simulation:
-    def __init__(self, profile: str = "px4", level: str = "mixto", seed: Optional[int] = None,
+    def __init__(self, profile: str = "x650", level: str = "mixto", seed: Optional[int] = None,
                  wind_speed: float = 0.0, wind_dir: float = 0.0, gusts: int = 0, noise: str = "realista",
                  precision_landing: bool = True, collision_prevention: bool = True, terrain: str = "plano",
                  density: str = "normal", goal_kind: str = "suelo", mode: str = "aterrizar", rain: str = "no",
-                 motion: str = "fija", map_mode: str = "conocido", search: str = "no", shared=None):
+                 motion: str = "fija", map_mode: str = "conocido", search: str = "no", shared=None,
+                 pilot: str = "clasico", dyn_rand=None, physics: str = PHYSICS, ram: bool = True,
+                 payload: float = 0.0):
         """`shared` (fase 5, enjambre): {"world", "grid", "searcher", "start", "id", "agl"} para que varios drones
         compartan el mundo y la creencia de la búsqueda (se comunican). Cada uno tiene su física, sensores,
         filtro, mapa, control y misión."""
         if search not in SEARCH_MODES:
             raise ValueError("Búsqueda desconocida %r" % search)
         if search != "no":  # se busca una plataforma quieta en el suelo, azotea o cima
-            motion = "fija"
+            if mode != "carrera":   # (en la carrera también un objetivo en movimiento: se busca con la cámara)
+                motion = "fija"
             goal_kind = "suelo" if goal_kind == "aire" else goal_kind
         if map_mode not in MAP_MODES:
             raise ValueError("Modo de mapa desconocido %r" % map_mode)
@@ -85,7 +105,7 @@ class Simulation:
             raise ValueError("Lluvia desconocida %r" % rain)
         if level == "almacen":   # interior: ni viento ni lluvia
             wind_speed, gusts, rain, terrain = 0.0, 0, "no", "plano"
-        self.prof = PROFILES[profile]
+        self.prof = with_payload(PROFILES[profile], payload)   # con la carga útil (0: sin ella)
         shared = shared or {}
         self.id = shared.get("id", 0)
         if "world" in shared:
@@ -99,12 +119,28 @@ class Simulation:
                        "collision_prevention": collision_prevention, "terrain": terrain, "density": density,
                        "goal_kind": self.world.goal_kind, "mode": mode, "rain": rain,
                        "motion": self.world.motion.kind if self.world.motion else "fija", "map_mode": map_mode,
-                       "search": search, "localization": "vio" if self.world.level == "almacen" else "gps"}
+                       "search": search, "localization": "vio" if self.world.level == "almacen" else "gps",
+                       "pilot": pilot, "physics": physics, "ram": ram, "payload": payload}
         self.mode = mode
         self.collision_prevention = collision_prevention
         yaw = random.Random(seed + 101 * self.id).uniform(-math.pi, math.pi)
-        self.drone = Multirotor(self.prof, shared.get("start", self.world.start), yaw)
-        self.drone.drag_mult = RAIN[rain]["drag"]
+        # aleatorización de la dinámica (entrenamiento, eval/evolve.py): el dron REAL tiene otro empuje, arrastre y
+        # retardos que los que cree el piloto, como al pasar de la simulación a un dron de verdad (SimpleFlight 2024:
+        # aleatorizar lo incierto, como el empuje, y no lo que se mide, como la masa)
+        phys = self.prof
+        if dyn_rand:
+            k = dyn_rand.get("tau", 1.0)
+            phys = dataclasses.replace(self.prof, twr=self.prof.twr * dyn_rand.get("twr", 1.0),
+                                       tau_att=self.prof.tau_att * k, tau_motor=self.prof.tau_motor * k,
+                                       tau_up=self.prof.tau_up * k, tau_down=self.prof.tau_down * k)
+        # física: "6dof" (4 motores, sólido rígido y el autopiloto interno de PX4; por defecto) o "simple" (empuje
+        # colectivo y actitud de primer orden: la de las fases 1-6, más rápida de simular)
+        if physics not in ("6dof", "simple"):
+            raise ValueError("Física desconocida %r" % physics)
+        self.physics = physics
+        cls = Multirotor6DOF if physics == "6dof" else Multirotor
+        self.drone = cls(phys, shared.get("start", self.world.start), yaw)
+        self.drone.drag_mult = RAIN[rain]["drag"] * (dyn_rand or {}).get("drag", 1.0)
         self.wind = Wind(wind_speed, wind_dir, gusts, seed, self.world)
         self.sensors = Sensors(self.prof, noise, seed + 1 + 1000 * self.id, rain)
         # en interior no hay GPS: odometría visual-inercial (VIO), precisa a corto plazo y con deriva
@@ -121,14 +157,43 @@ class Simulation:
         self.searcher = None
         self.max_time = MAX_TIME
         if search != "no":
-            self.area = make_area(self.world, seed)
+            # objetivo en movimiento: puede estar en cualquier sitio de la arena (una zona alrededor de donde
+            # empieza no vale, se va de ella en segundos) y la creencia se difunde a su velocidad máxima
+            speed = 0.0
+            if self.world.moving:
+                self.area = (1.0, LENGTH - 1.0, 1.0, WIDTH - 1.0)
+                speed = EvaderMotion.VMAX if self.world.motion.kind == "huye" else 6.0
+            else:
+                self.area = make_area(self.world, seed)
             self.searcher = shared.get("searcher") or Searcher(self.area, search, self._surface_belief,
-                                                               self._visible_belief, RAIN[rain]["range"])
+                                                               self._visible_belief, RAIN[rain]["range"],
+                                                               target_speed=speed)
             self.sensors.detect_on = True
             self.max_time = 300.0
         self.mission = Mission(self.world, self.grid, self.prof, precision_landing, mode, self.sensors.range,
-                               self.map, self.searcher)
+                               self.map, self.searcher, pilot, ram)
+        self.ctrl.P = self.mission.P          # Collision Prevention con los parámetros del piloto elegido
+        # ganancias entrenadas (carrera, eval/evolve.py): del bucle interno del autopiloto (actitud y velocidad
+        # angular, como el autotune de PX4) y de posición y velocidad (con qué firmeza se inclina para acelerar y
+        # frenar). Factores sobre las de fábrica de cada dron; 1 = sin cambios
+        # Si no, el AUTOTUNE de cada dron (eval/autotune.py → dron/autotune.json), en todas las misiones: es un ajuste
+        # del vehículo, no del piloto. Las de carrera, si las hay, lo sustituyen (se entrenaron partiendo de él)
+        P = self.mission.P
+        at = AUTOTUNE.get(profile, {}) if physics == "6dof" else {}
+        raced = pilots.race_params(self.mission.pilot, profile) if mode == "carrera" else {}
+        k = {g: (P[g] if g in raced else at.get(g, 1.0))
+             for g in ("att_k", "rate_pk", "rate_ik", "rate_dk", "xy_p_k", "vel_p_k")}
+        if physics == "6dof" and any(k[g] != 1.0 for g in ("att_k", "rate_pk", "rate_ik", "rate_dk")):
+            g = dict(self.drone.prof.inner)
+            g["att_p"] *= k["att_k"]
+            g["rate_p"] *= k["rate_pk"]
+            g["rate_i"] *= k["rate_ik"]
+            g["rate_d"] *= k["rate_dk"]
+            self.drone.prof = dataclasses.replace(self.drone.prof, inner=g)
+        self.ctrl.kp[:2] *= k["xy_p_k"]
+        self.ctrl.kv[:2] *= k["vel_p_k"]
         self.evader = self.mission.evader
+        self.camera_only = self.mission.camera_only   # sin rastreador: solo se sabe dónde está cuando se le ve
         self.mission.make_searcher = lambda area, center: Searcher(
             area, "bayesiana", self._surface_belief, self._visible_belief, RAIN[rain]["range"], prior=(center, 5.0),
             target_speed=EvaderMotion.VMAX)
@@ -141,8 +206,13 @@ class Simulation:
         self.mission.yaw = yaw
         self.mission.est = self.est
         self.t = 0.0
-        self.status = "flying"   # flying | success | missed | crash | timeout
+        self.status = "flying"   # flying | success | missed | crash | timeout | grounded (no despega)
         self.cause = None
+        peak = gust_peak(wind_speed, gusts)
+        if WIND_CHECK and self.prof.gust_max > 0 and peak > self.prof.gust_max:
+            self.status = "grounded"
+            self.cause = ("no despega: racha prevista %.1f m/s (viento %.0f m/s con ráfagas de nivel %d) > %.1f m/s, el "
+                          "límite del dron" % (peak, wind_speed, gusts, self.prof.gust_max)).replace(".", ",")
         self.wind_now = np.zeros(3)
         self.ref = (self.drone.p.copy(), np.zeros(3), np.zeros(3))
         self.max_speed = 0.0
@@ -172,6 +242,11 @@ class Simulation:
         self.wind_now = np.array(self.wind.step(d.p, airspeed, DT))
         d.step(DT, self.wind_now, self.world)
         if d.crashed:
+            # carrera: llegar es lo que cuenta, aunque sea impactando en la meta (a menos de 1 m de la puerta)
+            if self.mission.mode == "carrera" and np.linalg.norm(d.p - self._gate_now()) < GATE_RADIUS + 1.0:
+                self.mission.phase = "meta"
+                self.status, self.cause = "success", "impacto en la meta"
+                return
             self.status, self.cause = "crash", d.crashed
             return
         est.predict(self.sensors.imu(d.a, DT), DT)
@@ -179,7 +254,7 @@ class Simulation:
         r = self.sensors.read(self.t, d.p, d.v, d.yaw, self.world, (m.pad[0], m.pad[1], m.pad_z))
         if self.evader:
             self.world.motion.step(self.t, d.p)                    # el vehículo reacciona al dron
-        if self.evader and self.t >= self._next_target:           # la cámara en gimbal lo busca a 5 Hz
+        if self.camera_only and self.t >= self._next_target:      # la cámara en gimbal lo busca a 5 Hz
             self._next_target = self.t + 0.2
             r["evader_look"] = True
             gx, gy, gz = self.world.goal_at(self.t)
@@ -187,7 +262,8 @@ class Simulation:
             if rel is not None:                                   # posición medida = estimada + relativa
                 q = est.p + rel
                 r["target"], r["target_z"] = (q[0], q[1]), q[2] + 0.3
-        elif m.mode == "carrera" and not self.world.moving and m.gate_est is not None and GATE_CAMERA                 and self.t >= self._next_target:
+        elif m.mode == "carrera" and not self.world.moving and m.gate_est is not None and GATE_CAMERA \
+                and m.pilot.gate_camera and self.t >= self._next_target:
             # carrera a una meta quieta: la cámara en gimbal apunta a donde cree que está la plataforma (5 Hz), como
             # los drones de carreras autónomos que ven la puerta. La medida es RELATIVA: corrige el error del GPS
             self._next_target = self.t + 0.2
@@ -210,8 +286,20 @@ class Simulation:
         if "depth" in r:
             band = self.prof.radius + 0.5
             vz = float(est.v[2])
-            self._sectors = depth_sectors(r["depth"], band, band + max(0.0, -vz) * 0.8)
+            down = [x["dist"] for x in self.sensors.last_rays if x["label"] == "down"]
+            ground = down[0] if down and down[0] < self.sensors.range - 0.1 else None
+            # bajando en diagonal (el picado de la carrera), lo que está delante y por debajo cuenta según la senda
+            # de planeo: al llegar a 6 m, habrá bajado 6·|vz|/v_horizontal. Con solo lo que baja en 0,8 s, la azotea
+            # de un edificio 2,3 m más abajo no contaba hasta tenerla a 5,8 m, y a 10 m/s ya no frenaba (Matrice)
+            vh = math.hypot(float(est.v[0]), float(est.v[1]))
+            slope = min(1.2 * max(0.0, -vz) / max(vh, 1.0), 2.0)
+            self._sectors = depth_sectors(r["depth"], band, band + max(0.0, -vz) * 0.8, ground, slope)
             self._below = clearance_below(r["depth_down"], band, est.v[:2] * 0.6)
+            if vz < -0.5:
+                # bajando en diagonal, también lo que ve la cámara FRONTAL debajo de la senda en el próximo 1,2 s: la
+                # inferior no ve la azotea que tiene 7 m por delante. Así deja de bajar y la sobrevuela, en vez de
+                # intentar frenar en horizontal lo que no puede (a 9 m/s necesita 12 m)
+                self._below = min(self._below, clearance_below(r["depth"], band, est.v[:2] * 1.2, only_below=0.3))
         if self.map is not None:  # el mapa se construye desde donde el dron CREE estar
             if "rays" in r:
                 self.map.insert(est.p, [x["dir"] for x in r["rays"]], [x["dist"] for x in r["rays"]], self.sensors.range)
@@ -300,6 +388,11 @@ class Simulation:
         # Solo con la meta quieta: persiguiendo un vehículo el dron gira sin parar y el pasillo "recto" no vale (con
         # esto también ahí, 6 choques en 40 persecuciones; ahí el sprint es solo la velocidad máxima)
         self.ctrl.clear_ahead = math.inf if m.sprint and not m.moving else 0.0
+        self.ctrl.ram = (m.ram_tilt(), m.ram_speed()) if m.ram else None
+        # carrera: picado en diagonal hacia la meta (con velocidad horizontal no hay riesgo de anillo de vórtice)
+        horiz = math.hypot(est.v[0], est.v[1])
+        self.ctrl.dive = RACE_DIVE if m.mode == "carrera" and m.phase in ("carrera", "persecución") and horiz > 3.0 \
+            else 1.0
         t_vec = self.ctrl.update(est.p.copy(), est.v.copy(), p_ref, v_ref, a_ref, DT, rays)
         d.cmd_z = t_vec / np.linalg.norm(t_vec)
         d.cmd_thrust = float(t_vec @ d.z_body)
@@ -319,6 +412,13 @@ class Simulation:
             self.status, self.cause = "timeout", "tiempo agotado"
 
     # ------------------------------------------------------------------ lo que sabe el dron (búsqueda)
+    def _gate_now(self):
+        """La puerta de meta real en este instante (sobre el vehículo si se mueve)."""
+        if self.world.moving:
+            gx, gy, gz = self.world.goal_at(self.t)
+            return np.array([gx, gy, gz + 1.0])
+        return self.mission.gate
+
     def _surface_belief(self, x, y):
         """Altura del suelo en (x, y) según el dron: el mundo si lo conoce; si no, lo que ha visto (o, sin datos,
         la altura del suelo del despegue)."""
@@ -350,11 +450,15 @@ class Simulation:
         d, m = self.drone, self.mission
         xb, yb, zb = d.attitude()
         out = {
-            "t": round(self.t, 3), "status": self.status, "cause": self.cause, "phase": m.phase, "sprint": m.sprint,
+            "t": round(self.t, 3), "status": self.status, "cause": self.cause, "phase": m.phase, "sprint": m.sprint, "ram": m.ram,
             "pos": d.p.round(3).tolist(), "vel": d.v.round(3).tolist(), "acc": d.a.round(3).tolist(),
             "est": self.est.p.round(3).tolist(), "est_err": float(np.linalg.norm(self.est.p - d.p)),
             "x_body": xb.round(4).tolist(), "z_body": zb.round(4).tolist(), "yaw": d.yaw,
             "tilt_deg": math.degrees(d.tilt), "thrust_g": d.thrust / 9.81,
+            # 6 grados de libertad: salida de cada motor (0-1) y las dos palancas (empuje, balanceo, cabeceo, guiñada)
+            "motors": [round(u, 3) for u in getattr(d, "u", [])],
+            "sticks": [round(s, 3) for s in getattr(d, "sticks", [])],
+            "rates": [round(math.degrees(w), 1) for w in getattr(d, "w", [])],
             "speed": float(math.hypot(d.v[0], d.v[1])), "vz": float(d.v[2]),
             "ref": self.ref[0].round(3).tolist(), "ref_speed": float(math.hypot(*self.ref[1][:2])),
             "wind": self.wind_now.round(2).tolist(), "wind_mean": list(self.wind.mean(d.p)),
@@ -378,7 +482,7 @@ class Simulation:
             if full or self.t - getattr(self, "_search_sent", -9.0) >= 0.5 or self.done:
                 out["search"] = m.search.to_dict()
                 self._search_sent = self.t
-        if self.evader:
+        if self.camera_only:
             out["lost"] = m.lost_count
             out["seen_ago"] = round(self.t - m.last_seen_t, 1)
         if self.map is not None:
